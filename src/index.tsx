@@ -1,0 +1,60 @@
+import * as React from 'react'
+import { createRoot } from 'react-dom/client'
+import { PaintbrushApp } from './PaintbrushApp'
+import 'ol/ol.css'
+
+// Electron API types
+declare global {
+  interface Window {
+    electronAPI: {
+      saveFile: (data: string, defaultPath?: string) => Promise<{ success: boolean; filePath?: string; error?: string; canceled?: boolean }>
+      openFile: () => Promise<{ success: boolean; data?: string; filePath?: string; fileName?: string; error?: string; canceled?: boolean }>
+      openGeotiff: () => Promise<{ success: boolean; data?: ArrayBuffer; filePath?: string; fileName?: string; fileSizeMB?: number; error?: string; canceled?: boolean }>
+      openVector: () => Promise<{ 
+        success: boolean; 
+        data?: ArrayBuffer; 
+        shapefileData?: { shp: ArrayBuffer; dbf: ArrayBuffer | null; prj: string | null; shx: ArrayBuffer | null };
+        filePath?: string; 
+        fileName?: string; 
+        fileType?: string; 
+        fileSizeMB?: number; 
+        error?: string; 
+        canceled?: boolean 
+      }>
+      quickSave: (data: string, filePath: string) => Promise<{ success: boolean; filePath?: string; error?: string }>
+      exportFile: (data: string, format: string, defaultPath?: string) => Promise<{ success: boolean; filePath?: string; error?: string; canceled?: boolean }>
+      onTriggerSave: (callback: () => void) => () => void
+      platform: string
+    }
+    appInfo: {
+      name: string
+      version: string
+    }
+    hasUnsavedChanges: boolean
+  }
+}
+
+// Wait for DOM to be ready
+document.addEventListener('DOMContentLoaded', () => {
+  const container = document.getElementById('root')
+  if (!container) {
+    console.error('Root element not found')
+    return
+  }
+
+  // Remove loading screen after a short delay
+  setTimeout(() => {
+    const loadingScreen = document.querySelector('.loading-screen')
+    if (loadingScreen) {
+      loadingScreen.remove()
+    }
+  }, 500)
+
+  const root = createRoot(container)
+  root.render(
+    <React.StrictMode>
+      <PaintbrushApp />
+    </React.StrictMode>
+  )
+})
+
