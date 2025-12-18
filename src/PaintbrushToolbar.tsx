@@ -76,12 +76,23 @@ export const PaintbrushToolbar: React.FC<PaintbrushToolbarProps> = ({
       borderBottom: "1px solid #e8ecf4",
       flexShrink: 0
     }}>
-      {/* App Name */}
-      <span style={{ 
-        fontSize: "15px", 
-        fontWeight: 600,
-        color: "#1f2d3d"
-      }}>OffLIMMMA</span>
+      {/* App Logo and Name */}
+      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        <img 
+          src="icon.png" 
+          alt="offLIMMMA" 
+          style={{ 
+            width: "40px", 
+            height: "40px", 
+            borderRadius: "2px"
+          }} 
+        />
+        <span style={{ 
+          fontSize: "15px", 
+          fontWeight: 600,
+          color: "#1f2d3d"
+        }}>offLIMMMA</span>
+      </div>
 
       {/* Divider */}
       <div style={{ width: "1px", height: "24px", background: "#dfe4f4" }} />

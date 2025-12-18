@@ -3,15 +3,18 @@ const HtmlWebpackPlugin = require('html-webpack-plugin')
 const webpack = require('webpack')
 const fs = require('fs')
 
-// Copy JSTS to dist folder after build
-class CopyJstsPlugin {
+// Copy public assets to dist folder after build
+class CopyPublicAssetsPlugin {
   apply(compiler) {
-    compiler.hooks.afterEmit.tap('CopyJstsPlugin', () => {
-      const src = path.join(__dirname, 'public', 'jsts.min.js')
-      const dest = path.join(__dirname, 'dist', 'jsts.min.js')
-      if (fs.existsSync(src)) {
-        fs.copyFileSync(src, dest)
-      }
+    compiler.hooks.afterEmit.tap('CopyPublicAssetsPlugin', () => {
+      const filesToCopy = ['jsts.min.js', 'icon.png', 'LEAF Indonesia logo (oval).png', 'univs.png', 'uos.png']
+      filesToCopy.forEach(file => {
+        const src = path.join(__dirname, 'public', file)
+        const dest = path.join(__dirname, 'dist', file)
+        if (fs.existsSync(src)) {
+          fs.copyFileSync(src, dest)
+        }
+      })
     })
   }
 }
@@ -59,7 +62,7 @@ module.exports = {
       template: './public/index.html',
       filename: 'index.html'
     }),
-    new CopyJstsPlugin(),
+    new CopyPublicAssetsPlugin(),
     new webpack.ProvidePlugin({
       Buffer: ['buffer', 'Buffer'],
     })

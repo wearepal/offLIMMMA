@@ -42,19 +42,21 @@ document.addEventListener('DOMContentLoaded', () => {
     return
   }
 
-  // Remove loading screen after a short delay
-  setTimeout(() => {
-    const loadingScreen = document.querySelector('.loading-screen')
-    if (loadingScreen) {
-      loadingScreen.remove()
-    }
-  }, 500)
-
   const root = createRoot(container)
   root.render(
     <React.StrictMode>
       <PaintbrushApp />
     </React.StrictMode>
   )
+
+  // Remove loading screen after minimum display time (2 seconds)
+  setTimeout(() => {
+    const loadingScreen = document.getElementById('loading-screen')
+    if (loadingScreen) {
+      loadingScreen.style.transition = 'opacity 0.3s ease-out'
+      loadingScreen.style.opacity = '0'
+      setTimeout(() => loadingScreen.remove(), 300)
+    }
+  }, 2000)
 })
 

@@ -783,27 +783,26 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
 
     const getResolution = () => map.getView().getResolution() || 1
 
-    const pixelDistance = (coord1: number[], coord2: number[]): number => {
+    const mapDistance = (coord1: number[], coord2: number[]): number => {
       const dx = coord1[0] - coord2[0]
       const dy = coord1[1] - coord2[1]
       return Math.hypot(dx, dy)
-    }
-
-    const metersToPixels = (meters: number, resolution: number): number => {
-      return meters / resolution
     }
 
     const updateStroke = (coordinate: number[]) => {
       if (!vectorSourceRef.current || !selectedClass) return
       
       const resolution = getResolution()
-      const minDistancePixels = metersToPixels(5, resolution)
+      const minDistancePixels = 3 // minimum screen pixels between points
+      const minDistanceMapUnits = minDistancePixels * resolution
+      
+      console.log('Paint debug:', { resolution, minDistanceMapUnits, coordinate, coordsLength: currentStrokeCoordsRef.current.length })
       
       const coords = currentStrokeCoordsRef.current
       if (coords.length > 0) {
         const lastCoord = coords[coords.length - 1]
-        const pixelDist = pixelDistance(lastCoord, coordinate)
-        if (pixelDist < minDistancePixels) {
+        const dist = mapDistance(lastCoord, coordinate)
+        if (dist < minDistanceMapUnits) {
           return
         }
       }
@@ -947,6 +946,106 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
     }
   }, [map, activeTool, saveState])
 
+  // Pan the map in a direction
+  const panMap = React.useCallback((direction: 'up' | 'down' | 'left' | 'right') => {
+    if (!map) return
+    const view = map.getView()
+    const center = view.getCenter()
+    if (!center) return
+    
+    const resolution = view.getResolution() || 1
+    const panDistance = resolution * 100 // Pan by 100 pixels worth
+    
+    let newCenter: [number, number]
+    switch (direction) {
+      case 'up':
+        newCenter = [center[0], center[1] + panDistance]
+        break
+      case 'down':
+        newCenter = [center[0], center[1] - panDistance]
+        break
+      case 'left':
+        newCenter = [center[0] - panDistance, center[1]]
+        break
+      case 'right':
+        newCenter = [center[0] + panDistance, center[1]]
+        break
+    }
+    
+    view.animate({
+      center: newCenter,
+      duration: 150
+    })
+  }, [map])
+
+  // Keyboard arrow key navigation
+  React.useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // Don't handle if user is typing in an input
+      const target = event.target as HTMLElement
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+        return
+      }
+
+      switch (event.key) {
+        case 'ArrowUp':
+          event.preventDefault()
+          panMap('up')
+          break
+        case 'ArrowDown':
+          event.preventDefault()
+          panMap('down')
+          break
+        case 'ArrowLeft':
+          event.preventDefault()
+          panMap('left')
+          break
+        case 'ArrowRight':
+          event.preventDefault()
+          panMap('right')
+          break
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [panMap])
+
+  const ArrowButton: React.FC<{ direction: 'up' | 'down' | 'left' | 'right'; style?: React.CSSProperties }> = ({ direction, style }) => {
+    const arrows = {
+      up: 'M12 19V5M5 12l7-7 7 7',
+      down: 'M12 5v14M5 12l7 7 7-7',
+      left: 'M19 12H5M12 5l-7 7 7 7',
+      right: 'M5 12h14M12 5l7 7-7 7'
+    }
+    
+    return (
+      <button
+        onClick={() => panMap(direction)}
+        style={{
+          width: '32px',
+          height: '32px',
+          border: 'none',
+          borderRadius: '6px',
+          background: 'white',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+          transition: 'background 0.15s',
+          ...style
+        }}
+        onMouseEnter={(e) => e.currentTarget.style.background = '#f0f0f0'}
+        onMouseLeave={(e) => e.currentTarget.style.background = 'white'}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#333" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d={arrows[direction]} />
+        </svg>
+      </button>
+    )
+  }
+
   return (
     <div style={{ 
       width: "100%", 
@@ -955,9 +1054,45 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
       minWidth: 0,
       borderRadius: "8px",
       overflow: "hidden",
-      border: "1px solid #dfe4f4"
+      border: "1px solid #dfe4f4",
+      position: "relative"
     }}>
       <div style={{ width: "100%", height: "100%", minHeight: 0 }} ref={mapRef} />
+      
+      {/* Arrow Navigation Controls */}
+      <div style={{
+        position: 'absolute',
+        bottom: '20px',
+        left: '20px',
+        display: 'grid',
+        gridTemplateColumns: 'repeat(3, 32px)',
+        gridTemplateRows: 'repeat(3, 32px)',
+        gap: '4px',
+        zIndex: 100
+      }}>
+        <div /> {/* Empty top-left */}
+        <ArrowButton direction="up" />
+        <div /> {/* Empty top-right */}
+        <ArrowButton direction="left" />
+        <div style={{
+          width: '32px',
+          height: '32px',
+          borderRadius: '6px',
+          background: 'white',
+          boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center'
+        }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#999" strokeWidth="2">
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+        </div>
+        <ArrowButton direction="right" />
+        <div /> {/* Empty bottom-left */}
+        <ArrowButton direction="down" />
+        <div /> {/* Empty bottom-right */}
+      </div>
     </div>
   )
 })
