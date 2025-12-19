@@ -372,7 +372,6 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      margin-bottom: 24px;
       box-shadow: var(--shadow-glow);
     }
 
@@ -390,10 +389,10 @@
     }
 
     .loading-spinner {
-      width: 32px;
-      height: 32px;
-      border: 3px solid var(--border-color);
-      border-top-color: var(--accent-primary);
+      width: 92px;
+      height: 92px;
+      border: 24px solid var(--border-color);
+      border-top-color: #00a824;
       border-radius: 50%;
       animation: spin 0.8s linear infinite;
     }
@@ -402,13 +401,12 @@
 <body>
   <div id="root"></div>
   <div id="loading-screen" class="loading-screen">
-    <img src="icon.png" alt="OffLIMMMA" style="width: 80px; height: 80px; margin-bottom: 16px; border-radius: 16px;" />
+    <img src="LEAF Indonesia logo (oval).png" alt="LEAF Indonesia" style="height: 240px; object-fit: contain;" />
+    
+    <div class="loading-spinner" style="margin-bottom: 20px;"></div>
+    <img src="icon.png" alt="OffLIMMMA" id="app-logo" style="width: 150px; height: 150px; margin-bottom: 16px; border-radius: 16px;" />
     <div class="loading-text">LIMMMA - Offline Paintbrush Tool</div>
-    <div class="loading-spinner" style="margin-bottom: 32px;"></div>
-    <div style="display: flex; flex-direction: column; align-items: center; gap: 2px;">
-      <img src="LEAF Indonesia logo (oval).png" alt="LEAF Indonesia" style="height: 140px; object-fit: contain;" />
-      <img src="univs.png" alt="Universities" style="height: 100px; object-fit: contain;" />
-    </div>
+    <img src="univs.png" alt="Universities" style="height: 140px; object-fit: contain;" />
   </div>
 </body>
 </html>

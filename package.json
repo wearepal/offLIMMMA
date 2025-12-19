@@ -11,7 +11,10 @@
     "package": "npm run build && electron-builder",
     "package:win": "npm run build && electron-builder --win",
     "package:mac": "npm run build && electron-builder --mac",
-    "package:linux": "npm run build && electron-builder --linux"
+    "package:linux": "npm run build && electron-builder --linux",
+    "package:win:bbox": "node scripts/package-with-bbox.js --win",
+    "package:mac:bbox": "node scripts/package-with-bbox.js --mac",
+    "package:linux:bbox": "node scripts/package-with-bbox.js --linux"
   },
   "build": {
     "appId": "com.offlimmma.app",
@@ -22,11 +25,13 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
-      "public/**/*"
+      "public/**/*",
+      "electron/config.json"
     ],
     "win": {
       "target": "portable",
-      "signAndEditExecutable": false
+      "signAndEditExecutable": false,
+      "icon": "public/icon.png"
     },
     "mac": {
       "target": "dmg",

@@ -4,8 +4,80 @@ const fs = require('fs')
 
 // Keep a global reference of the window object
 let mainWindow
+let hasUnsavedChanges = false
+let isHandlingQuit = false
+
+// Load default bounding box from config file (if exists)
+function loadDefaultBoundingBox() {
+  try {
+    // In packaged app, config.json is in the same directory as main.js
+    // In dev, it's in electron/config.json
+    const configPath = path.join(__dirname, 'config.json')
+    console.log('Looking for config.json at:', configPath)
+    
+    if (fs.existsSync(configPath)) {
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'))
+      console.log('Loaded config:', config)
+      if (config.defaultBoundingBox) {
+        const parts = config.defaultBoundingBox.split(',').map(Number)
+        if (parts.length >= 4 && !parts.some(isNaN)) {
+          const bbox = {
+            minX: parts[0],
+            minY: parts[1],
+            maxX: parts[2],
+            maxY: parts[3],
+            zoom: parts[4] || undefined,
+            epsg: config.defaultEpsg || '4326'
+          }
+          console.log('Parsed bounding box from config:', bbox)
+          return bbox
+        }
+      }
+    } else {
+      console.log('Config file not found at:', configPath)
+    }
+  } catch (error) {
+    console.warn('Failed to load default bounding box config:', error.message)
+  }
+  return null
+}
+
+// Parse command line arguments for bounding box
+// Works in both development and packaged executable modes
+// Falls back to default from config.json if no command-line args provided
+function parseBoundingBox() {
+  // First, try command-line arguments
+  const bboxArg = process.argv.find(arg => arg && arg.startsWith('--bbox='))
+  if (bboxArg) {
+    const epsgArg = process.argv.find(arg => arg && arg.startsWith('--epsg='))
+    const epsgCode = epsgArg ? epsgArg.split('=')[1] : '4326'
+    
+    const bboxString = bboxArg.split('=')[1]
+    const parts = bboxString.split(',').map(Number)
+    
+    if (parts.length < 4 || parts.some(isNaN)) {
+      console.warn('Invalid bounding box format. Expected: --bbox=minX,minY,maxX,maxY[,zoom]')
+      return null
+    }
+    
+    return {
+      minX: parts[0],
+      minY: parts[1],
+      maxX: parts[2],
+      maxY: parts[3],
+      zoom: parts[4] || undefined,
+      epsg: epsgCode
+    }
+  }
+  
+  // If no command-line args, try default from config file
+  return loadDefaultBoundingBox()
+}
 
 function createWindow() {
+  // Suppress Electron cache/quota errors (harmless but noisy)
+  app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor')
+  
   // Create the browser window
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -17,13 +89,59 @@ function createWindow() {
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js')
     },
-    icon: path.join(__dirname, '../public/icon.png'),
+    icon: path.join(__dirname, '../public/icon.png').replace(/\\/g, '/'),
     title: 'OffLIMMMA',
     backgroundColor: '#f8f9fc'
   })
 
+  // Parse bounding box before loading (so it's available immediately)
+  const bbox = parseBoundingBox()
+  if (bbox) {
+    console.log('Found bounding box:', bbox)
+  } else {
+    console.log('No bounding box found (checking config.json at:', path.join(__dirname, 'config.json'))
+  }
+  
+  // Inject bounding box script BEFORE loading the page
+  if (bbox) {
+    mainWindow.webContents.once('dom-ready', () => {
+      mainWindow.webContents.executeJavaScript(`
+        (function() {
+          window.initialBoundingBox = {
+            minX: ${bbox.minX},
+            minY: ${bbox.minY},
+            maxX: ${bbox.maxX},
+            maxY: ${bbox.maxY},
+            zoom: ${bbox.zoom !== undefined ? bbox.zoom : 'undefined'},
+            epsg: '${bbox.epsg}'
+          };
+          console.log('Initial bounding box set (early):', window.initialBoundingBox);
+        })();
+      `)
+    })
+  }
+  
   // Load the index.html file
   mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
+  
+  // Also set it after load as backup
+  mainWindow.webContents.once('did-finish-load', () => {
+    if (bbox) {
+      mainWindow.webContents.executeJavaScript(`
+        if (!window.initialBoundingBox) {
+          window.initialBoundingBox = {
+            minX: ${bbox.minX},
+            minY: ${bbox.minY},
+            maxX: ${bbox.maxX},
+            maxY: ${bbox.maxY},
+            zoom: ${bbox.zoom !== undefined ? bbox.zoom : 'undefined'},
+            epsg: '${bbox.epsg}'
+          };
+          console.log('Initial bounding box set (late):', window.initialBoundingBox);
+        }
+      `)
+    }
+  })
 
   // Open DevTools in development
   if (process.env.NODE_ENV === 'development') {
@@ -35,37 +153,164 @@ function createWindow() {
   })
 
   // Handle window close with unsaved changes
-  mainWindow.on('close', async (e) => {
-    const hasUnsavedChanges = await mainWindow.webContents.executeJavaScript('window.hasUnsavedChanges || false')
+  mainWindow.on('close', (e) => {
+    console.log('Window close event triggered')
+    console.log('Main process hasUnsavedChanges:', hasUnsavedChanges)
+    console.log('isHandlingQuit:', isHandlingQuit)
+    
+    // If before-quit already handled it, don't handle again
+    if (isHandlingQuit) {
+      console.log('Quit already being handled, allowing close')
+      return
+    }
+    
+    // Check unsaved changes synchronously first - MUST prevent default synchronously
     if (hasUnsavedChanges) {
+      console.log('Preventing window close and showing dialog')
+      isHandlingQuit = true
       e.preventDefault()
+      
+      // Show dialog immediately (synchronously)
+      console.log('About to show dialog')
       const choice = dialog.showMessageBoxSync(mainWindow, {
         type: 'warning',
-        buttons: ['Save & Exit', 'Exit Without Saving', 'Cancel'],
+        buttons: ['Save', 'Don\'t Save', 'Cancel'],
         defaultId: 0,
         cancelId: 2,
         title: 'Unsaved Changes',
-        message: 'You have unsaved changes. What would you like to do?'
+        message: 'You have unsaved changes. Do you want to save before closing?',
+        detail: 'Your changes will be lost if you don\'t save them.'
       })
+      console.log('Dialog choice:', choice)
       
       if (choice === 0) {
-        // Save & Exit - trigger save then close
+        // Save - trigger save and wait for it to complete
         mainWindow.webContents.send('trigger-save')
-        // Wait a bit for save to complete, then close
-        setTimeout(() => {
-          mainWindow.destroy()
-        }, 500)
+        
+        // Wait for save to complete (poll for unsaved changes to clear)
+        let attempts = 0
+        const maxAttempts = 25 // 5 seconds max wait
+        
+        const checkSaveComplete = setInterval(async () => {
+          attempts++
+          const stillUnsaved = await mainWindow.webContents.executeJavaScript('window.hasUnsavedChanges || false')
+          
+          if (!stillUnsaved || attempts >= maxAttempts) {
+            clearInterval(checkSaveComplete)
+            if (stillUnsaved && attempts >= maxAttempts) {
+              // Save didn't complete in time, ask user
+              const retryChoice = dialog.showMessageBoxSync(mainWindow, {
+                type: 'warning',
+                buttons: ['Exit Without Saving', 'Cancel'],
+                defaultId: 1,
+                cancelId: 1,
+                title: 'Save Incomplete',
+                message: 'Save may not have completed. Exit anyway?'
+              })
+              if (retryChoice === 0) {
+                isHandlingQuit = false
+                mainWindow.destroy()
+              } else {
+                isHandlingQuit = false
+              }
+            } else {
+              // Save completed successfully
+              isHandlingQuit = false
+              mainWindow.destroy()
+            }
+          }
+        }, 200)
       } else if (choice === 1) {
-        // Exit without saving
+        // Don't Save - exit without saving
+        isHandlingQuit = false
         mainWindow.destroy()
+      } else {
+        // Cancel
+        isHandlingQuit = false
       }
       // choice === 2 means Cancel, do nothing
+    } else {
+      console.log('No unsaved changes, allowing close')
     }
   })
 }
 
 // App ready
 app.whenReady().then(createWindow)
+
+// Handle app quit with unsaved changes check
+app.on('before-quit', (e) => {
+  console.log('before-quit event triggered')
+  console.log('Main process hasUnsavedChanges:', hasUnsavedChanges)
+  
+  if (hasUnsavedChanges && mainWindow && !mainWindow.isDestroyed()) {
+    console.log('Preventing quit and showing dialog')
+    isHandlingQuit = true
+    e.preventDefault()
+    
+    // Show dialog immediately (synchronously)
+    console.log('About to show dialog')
+    const choice = dialog.showMessageBoxSync(mainWindow, {
+      type: 'warning',
+      buttons: ['Save', 'Don\'t Save', 'Cancel'],
+      defaultId: 0,
+      cancelId: 2,
+      title: 'Unsaved Changes',
+      message: 'You have unsaved changes. Do you want to save before closing?',
+      detail: 'Your changes will be lost if you don\'t save them.'
+    })
+    console.log('Dialog choice:', choice)
+    
+    if (choice === 0) {
+      // Save - trigger save and wait for it to complete
+      mainWindow.webContents.send('trigger-save')
+      
+      // Wait for save to complete (poll for unsaved changes to clear)
+      let attempts = 0
+      const maxAttempts = 25 // 5 seconds max wait
+      
+      const checkSaveComplete = setInterval(async () => {
+        attempts++
+        const stillUnsaved = await mainWindow.webContents.executeJavaScript('window.hasUnsavedChanges || false')
+        
+        if (!stillUnsaved || attempts >= maxAttempts) {
+          clearInterval(checkSaveComplete)
+          if (stillUnsaved && attempts >= maxAttempts) {
+            // Save didn't complete in time, ask user
+            const retryChoice = dialog.showMessageBoxSync(mainWindow, {
+              type: 'warning',
+              buttons: ['Exit Without Saving', 'Cancel'],
+              defaultId: 1,
+              cancelId: 1,
+              title: 'Save Incomplete',
+              message: 'Save may not have completed. Exit anyway?'
+            })
+            if (retryChoice === 0) {
+              isHandlingQuit = false
+              app.quit()
+            } else {
+              isHandlingQuit = false
+            }
+          } else {
+            // Save completed successfully
+            isHandlingQuit = false
+            app.quit()
+          }
+        }
+      }, 200)
+    } else if (choice === 1) {
+      // Don't Save - exit without saving
+      isHandlingQuit = false
+      app.quit()
+    } else {
+      // Cancel
+      isHandlingQuit = false
+    }
+    // choice === 2 means Cancel, do nothing
+  } else {
+    console.log('No unsaved changes, allowing quit')
+  }
+})
 
 // Quit when all windows are closed (except on macOS)
 app.on('window-all-closed', () => {
@@ -78,6 +323,14 @@ app.on('activate', () => {
   if (mainWindow === null) {
     createWindow()
   }
+})
+
+// IPC Handlers
+
+// Handle unsaved changes state updates from renderer
+ipcMain.on('set-unsaved-changes', (event, hasUnsaved) => {
+  hasUnsavedChanges = hasUnsaved
+  console.log('Main process: hasUnsavedChanges set to', hasUnsavedChanges)
 })
 
 // IPC Handlers for file operations

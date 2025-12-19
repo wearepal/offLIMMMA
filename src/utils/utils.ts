@@ -2,6 +2,11 @@ import { PaintClass } from "./types"
 import distinctColors from "distinct-colors"
 
 /**
+ * App logo path - always use icon.png for the application logo
+ */
+export const APP_LOGO_PATH = "icon.png"
+
+/**
  * Convert hex color to rgba with transparency
  */
 export const hexToRgba = (hex: string, alpha: number): string => {

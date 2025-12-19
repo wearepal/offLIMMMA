@@ -17,6 +17,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('trigger-save', callback)
   },
   
+  // Send unsaved changes state to main process
+  setUnsavedChanges: (hasUnsaved) => {
+    ipcRenderer.send('set-unsaved-changes', hasUnsaved)
+  },
+  
   // Platform info
   platform: process.platform,
   

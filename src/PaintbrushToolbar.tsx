@@ -1,4 +1,5 @@
 import * as React from "react"
+import { APP_LOGO_PATH } from "./utils/utils"
 
 type PaintbrushToolbarProps = {
   onUndo?: () => void
@@ -79,8 +80,8 @@ export const PaintbrushToolbar: React.FC<PaintbrushToolbarProps> = ({
       {/* App Logo and Name */}
       <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
         <img 
-          src="icon.png" 
-          alt="offLIMMMA" 
+          src={APP_LOGO_PATH} 
+          alt="LIMMMA" 
           style={{ 
             width: "40px", 
             height: "40px", 
@@ -91,7 +92,7 @@ export const PaintbrushToolbar: React.FC<PaintbrushToolbarProps> = ({
           fontSize: "15px", 
           fontWeight: 600,
           color: "#1f2d3d"
-        }}>offLIMMMA</span>
+        }}>LIMMMA: Offline Paintbrush Tool</span>
       </div>
 
       {/* Divider */}

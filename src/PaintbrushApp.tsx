@@ -30,16 +30,38 @@ export const PaintbrushApp: React.FC = () => {
   const [usingCachedTiles, setUsingCachedTiles] = React.useState(false)
   const cachedTileTimeoutRef = React.useRef<NodeJS.Timeout | null>(null)
   const mapRef = React.useRef<PaintbrushMapRef>(null)
+  const previousToolRef = React.useRef<ToolMode>(ToolMode.Cursor)
+  const spacebarPressedRef = React.useRef(false)
 
   // Unified layers state (OSM + GeoTIFFs)
   const [layers, setLayers] = React.useState<LayerInfo[]>([
     { id: "osm", name: "OpenStreetMap", type: "osm", opacity: 1, visible: true }
   ])
 
-  // Expose unsaved changes state to window for Electron
+  // Expose unsaved changes state to window for Electron and send to main process
   React.useEffect(() => {
-    window.hasUnsavedChanges = hasUnsavedChanges
+    // Ensure window object exists
+    if (typeof window !== 'undefined') {
+      window.hasUnsavedChanges = hasUnsavedChanges
+      console.log('Updated window.hasUnsavedChanges to:', hasUnsavedChanges)
+      
+      // Also send to main process via IPC
+      if (window.electronAPI?.setUnsavedChanges) {
+        window.electronAPI.setUnsavedChanges(hasUnsavedChanges)
+      }
+    }
   }, [hasUnsavedChanges])
+  
+  // Initialize window.hasUnsavedChanges on mount
+  React.useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.hasUnsavedChanges = false
+      if (window.electronAPI?.setUnsavedChanges) {
+        window.electronAPI.setUnsavedChanges(false)
+      }
+      console.log('Initialized window.hasUnsavedChanges to false')
+    }
+  }, [])
 
   // Listen for save trigger from Electron main process
   React.useEffect(() => {
@@ -133,8 +155,50 @@ export const PaintbrushApp: React.FC = () => {
 
   const handleOpen = async () => {
     if (hasUnsavedChanges) {
-      const confirmOpen = confirm('You have unsaved changes. Are you sure you want to open a different file?')
-      if (!confirmOpen) return
+      const choice = confirm('You have unsaved changes. Do you want to save before opening a different file?')
+      if (choice) {
+        // User wants to save
+        const geoJson = mapRef.current?.exportGeoJSON()
+        if (geoJson) {
+          setIsSaving(true)
+          try {
+            let result
+            if (currentFilePath) {
+              result = await window.electronAPI.quickSave(geoJson, currentFilePath)
+            } else {
+              result = await window.electronAPI.saveFile(geoJson, `${projectName}.geojson`)
+            }
+            
+            if (result.success && result.filePath) {
+              setCurrentFilePath(result.filePath)
+              setHasUnsavedChanges(false)
+              if (!currentFilePath) {
+                const fileName = result.filePath.split(/[\\/]/).pop()?.replace(/\.(geojson|json)$/i, '') || projectName
+                setProjectName(fileName)
+              }
+            } else {
+              // Save was cancelled or failed, ask if they still want to open
+              const stillOpen = confirm('Save was not completed. Open file anyway?')
+              if (!stillOpen) {
+                setIsSaving(false)
+                return
+              }
+            }
+          } catch (error) {
+            const stillOpen = confirm('An error occurred while saving. Open file anyway?')
+            if (!stillOpen) {
+              setIsSaving(false)
+              return
+            }
+          } finally {
+            setIsSaving(false)
+          }
+        }
+      } else {
+        // User doesn't want to save, ask for confirmation
+        const confirmOpen = confirm('Your unsaved changes will be lost. Are you sure you want to open a different file?')
+        if (!confirmOpen) return
+      }
     }
 
     try {
@@ -154,10 +218,52 @@ export const PaintbrushApp: React.FC = () => {
     }
   }
 
-  const handleNew = () => {
+  const handleNew = async () => {
     if (hasUnsavedChanges) {
-      const confirmNew = confirm('You have unsaved changes. Are you sure you want to start a new project?')
-      if (!confirmNew) return
+      const choice = confirm('You have unsaved changes. Do you want to save before starting a new project?')
+      if (choice) {
+        // User wants to save
+        const geoJson = mapRef.current?.exportGeoJSON()
+        if (geoJson) {
+          setIsSaving(true)
+          try {
+            let result
+            if (currentFilePath) {
+              result = await window.electronAPI.quickSave(geoJson, currentFilePath)
+            } else {
+              result = await window.electronAPI.saveFile(geoJson, `${projectName}.geojson`)
+            }
+            
+            if (result.success && result.filePath) {
+              setCurrentFilePath(result.filePath)
+              setHasUnsavedChanges(false)
+              if (!currentFilePath) {
+                const fileName = result.filePath.split(/[\\/]/).pop()?.replace(/\.(geojson|json)$/i, '') || projectName
+                setProjectName(fileName)
+              }
+            } else {
+              // Save was cancelled or failed, ask if they still want to create new
+              const stillNew = confirm('Save was not completed. Start new project anyway?')
+              if (!stillNew) {
+                setIsSaving(false)
+                return
+              }
+            }
+          } catch (error) {
+            const stillNew = confirm('An error occurred while saving. Start new project anyway?')
+            if (!stillNew) {
+              setIsSaving(false)
+              return
+            }
+          } finally {
+            setIsSaving(false)
+          }
+        }
+      } else {
+        // User doesn't want to save, ask for confirmation
+        const confirmNew = confirm('Your unsaved changes will be lost. Are you sure you want to start a new project?')
+        if (!confirmNew) return
+      }
     }
 
     setClasses([])
@@ -365,7 +471,22 @@ export const PaintbrushApp: React.FC = () => {
     const handleKeyDown = (event: KeyboardEvent) => {
       // Check if we're in a text input/textarea
       const target = event.target as HTMLElement
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+      const isTyping = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable
+      
+      if (isTyping) {
+        return
+      }
+
+      // Spacebar - switch to paint mode while held
+      if (event.key === ' ' || event.key === 'Spacebar') {
+        if (!spacebarPressedRef.current && selectedClass) {
+          event.preventDefault()
+          spacebarPressedRef.current = true
+          previousToolRef.current = activeTool
+          if (activeTool !== ToolMode.Paint) {
+            setActiveTool(ToolMode.Paint)
+          }
+        }
         return
       }
 
@@ -391,9 +512,24 @@ export const PaintbrushApp: React.FC = () => {
       }
     }
 
+    const handleKeyUp = (event: KeyboardEvent) => {
+      // Spacebar released - switch back to previous tool
+      if ((event.key === ' ' || event.key === 'Spacebar') && spacebarPressedRef.current) {
+        event.preventDefault()
+        spacebarPressedRef.current = false
+        if (activeTool === ToolMode.Paint && previousToolRef.current !== ToolMode.Paint) {
+          setActiveTool(previousToolRef.current)
+        }
+      }
+    }
+
     window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [hasUnsavedChanges, projectName, currentFilePath])
+    window.addEventListener('keyup', handleKeyUp)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('keyup', handleKeyUp)
+    }
+  }, [hasUnsavedChanges, projectName, currentFilePath, activeTool, selectedClass])
 
   return (
     <div style={{ 

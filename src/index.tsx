@@ -6,6 +6,14 @@ import 'ol/ol.css'
 // Electron API types
 declare global {
   interface Window {
+    initialBoundingBox?: {
+      minX: number
+      minY: number
+      maxX: number
+      maxY: number
+      zoom?: number
+      epsg: string
+    }
     electronAPI: {
       saveFile: (data: string, defaultPath?: string) => Promise<{ success: boolean; filePath?: string; error?: string; canceled?: boolean }>
       openFile: () => Promise<{ success: boolean; data?: string; filePath?: string; fileName?: string; error?: string; canceled?: boolean }>
@@ -24,6 +32,7 @@ declare global {
       quickSave: (data: string, filePath: string) => Promise<{ success: boolean; filePath?: string; error?: string }>
       exportFile: (data: string, format: string, defaultPath?: string) => Promise<{ success: boolean; filePath?: string; error?: string; canceled?: boolean }>
       onTriggerSave: (callback: () => void) => () => void
+      setUnsavedChanges: (hasUnsaved: boolean) => void
       platform: string
     }
     appInfo: {

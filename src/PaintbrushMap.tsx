@@ -5,7 +5,7 @@ import VectorLayer from "ol/layer/Vector"
 import OSM from "ol/source/OSM"
 import XYZ from "ol/source/XYZ"
 import VectorSource from "ol/source/Vector"
-import { fromLonLat, toLonLat } from "ol/proj"
+import { fromLonLat, toLonLat, transform } from "ol/proj"
 import { Fill, Style, Stroke } from "ol/style"
 import { PaintClass, ToolMode } from "./utils/types"
 import Feature from "ol/Feature"
@@ -348,8 +348,47 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
   React.useEffect(() => {
     if (!mapRef.current) return
 
+    // Get initial bounding box from command line args if provided
+    const initialBbox = (window as any).initialBoundingBox
+    console.log('PaintbrushMap: initialBoundingBox =', initialBbox)
+    
     // Default center (world view)
-    const defaultCenter = fromLonLat([0, 20])
+    let defaultCenter = fromLonLat([0, 20])
+    let defaultZoom = 3
+    
+    // Calculate center and zoom from bounding box if provided
+    if (initialBbox) {
+      const sourceEpsg = `EPSG:${initialBbox.epsg}`
+      const targetEpsg = 'EPSG:3857' // Web Mercator (OpenLayers default)
+      
+      try {
+        // Transform coordinates from source EPSG to Web Mercator
+        const minCoord = transform([initialBbox.minX, initialBbox.minY], sourceEpsg, targetEpsg)
+        const maxCoord = transform([initialBbox.maxX, initialBbox.maxY], sourceEpsg, targetEpsg)
+        
+        // Calculate center in Web Mercator
+        defaultCenter = [
+          (minCoord[0] + maxCoord[0]) / 2,
+          (minCoord[1] + maxCoord[1]) / 2
+        ] as [number, number]
+        
+        if (initialBbox.zoom !== undefined && initialBbox.zoom !== null) {
+          defaultZoom = initialBbox.zoom
+        }
+      } catch (error) {
+        console.warn('Failed to transform bounding box coordinates:', error)
+        // Fall back to treating as WGS84 if transformation fails
+        if (initialBbox.epsg === '4326') {
+          const centerLon = (initialBbox.minX + initialBbox.maxX) / 2
+          const centerLat = (initialBbox.minY + initialBbox.maxY) / 2
+          defaultCenter = fromLonLat([centerLon, centerLat])
+          if (initialBbox.zoom !== undefined && initialBbox.zoom !== null) {
+            defaultZoom = initialBbox.zoom
+          }
+        }
+      }
+    }
+    
     const vectorSource = new VectorSource()
     vectorSourceRef.current = vectorSource
 
@@ -431,6 +470,8 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
     })
     tileLayerRef.current = tileLayer
 
+    if (!mapRef.current) return
+    
     const newMap = new Map({
       target: mapRef.current,
       layers: [
@@ -439,19 +480,106 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
       ],
       view: new View({
         center: defaultCenter,
-        zoom: 3
+        zoom: defaultZoom
       })
     })
 
     setMap(newMap)
+    
+    // Fit to bounding box if provided (check immediately and after a delay for async setting)
+    const fitToBbox = (bbox: any) => {
+      if (!bbox) return
+      
+      setTimeout(() => {
+        if (!newMap || !newMap.getView()) {
+          console.log('Map not ready yet, retrying...')
+          setTimeout(() => fitToBbox(bbox), 100)
+          return
+        }
+        
+        const sourceEpsg = `EPSG:${bbox.epsg}`
+        const targetEpsg = 'EPSG:3857' // Web Mercator
+        
+        console.log('Attempting to fit map to bounding box:', bbox)
+        
+        try {
+          // Transform coordinates from source EPSG to Web Mercator
+          const minCoord = transform([bbox.minX, bbox.minY], sourceEpsg, targetEpsg)
+          const maxCoord = transform([bbox.maxX, bbox.maxY], sourceEpsg, targetEpsg)
+          
+          // OpenLayers extent format: [minX, minY, maxX, maxY]
+          const extent: [number, number, number, number] = [
+            Math.min(minCoord[0], maxCoord[0]),
+            Math.min(minCoord[1], maxCoord[1]),
+            Math.max(minCoord[0], maxCoord[0]),
+            Math.max(minCoord[1], maxCoord[1])
+          ]
+          
+          const fitOptions: any = {
+            padding: [50, 50, 50, 50],
+            duration: 500
+          }
+          
+          // If zoom is specified, constrain the fit to that zoom level
+          if (bbox.zoom !== undefined && bbox.zoom !== null) {
+            fitOptions.maxZoom = bbox.zoom
+            fitOptions.minZoom = bbox.zoom
+          }
+          
+          newMap.getView().fit(extent, fitOptions)
+          console.log('Fit command executed')
+        } catch (error) {
+          console.error('Failed to transform bounding box for fit:', error)
+          // Fall back to WGS84 if transformation fails
+          if (bbox.epsg === '4326') {
+            const minCoord = fromLonLat([bbox.minX, bbox.minY])
+            const maxCoord = fromLonLat([bbox.maxX, bbox.maxY])
+            
+            const extent: [number, number, number, number] = [
+              Math.min(minCoord[0], maxCoord[0]),
+              Math.min(minCoord[1], maxCoord[1]),
+              Math.max(minCoord[0], maxCoord[0]),
+              Math.max(minCoord[1], maxCoord[1])
+            ]
+            
+            const fitOptions: any = {
+              padding: [50, 50, 50, 50],
+              duration: 500
+            }
+            
+            if (bbox.zoom !== undefined && bbox.zoom !== null) {
+              fitOptions.maxZoom = bbox.zoom
+              fitOptions.minZoom = bbox.zoom
+            }
+            
+            newMap.getView().fit(extent, fitOptions)
+          }
+        }
+      }, 300)
+    }
+    
+    // Try to fit immediately if bbox is available
+    if (initialBbox) {
+      fitToBbox(initialBbox)
+    } else {
+      // Wait a bit for Electron to set it, then try again
+      setTimeout(() => {
+        const bbox = (window as any).initialBoundingBox
+        if (bbox) {
+          fitToBbox(bbox)
+        }
+      }, 500)
+    }
     
     // Initialize history with empty state
     historyRef.current = [[]]
     historyIndexRef.current = 0
 
     return () => {
-      newMap.setTarget(undefined)
-      newMap.dispose()
+      if (newMap) {
+        newMap.setTarget(undefined)
+        newMap.dispose()
+      }
       vectorSourceRef.current = null
     }
   }, [])
@@ -492,8 +620,8 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
 
         const geoJsonParsed = JSON.parse(geoJsonData)
         
-        // Restore classes from metadata if present
-        if (geoJsonParsed.metadata?.classes && onClassesRestoredRef.current && classes.length === 0) {
+        // Restore classes from metadata if present (always restore, even if classes already exist)
+        if (geoJsonParsed.metadata?.classes && onClassesRestoredRef.current) {
           const restoredClasses: PaintClass[] = geoJsonParsed.metadata.classes
             .sort((a: { order: number }, b: { order: number }) => a.order - b.order)
             .map((c: { id: number; name?: string; color?: string }) => ({
@@ -795,8 +923,6 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
       const resolution = getResolution()
       const minDistancePixels = 3 // minimum screen pixels between points
       const minDistanceMapUnits = minDistancePixels * resolution
-      
-      console.log('Paint debug:', { resolution, minDistanceMapUnits, coordinate, coordsLength: currentStrokeCoordsRef.current.length })
       
       const coords = currentStrokeCoordsRef.current
       if (coords.length > 0) {
