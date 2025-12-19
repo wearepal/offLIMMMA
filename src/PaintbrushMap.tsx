@@ -219,11 +219,19 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
     const features = vectorSourceRef.current.getFeatures()
     if (features.length === 0) return null
     
+    // Create GeoJSON format configured for EPSG:3857 export
+    // Both dataProjection and featureProjection set to 3857 means no transformation
+    const exportFormat = new GeoJSON({
+      dataProjection: 'EPSG:3857',
+      featureProjection: 'EPSG:3857'
+    })
+    
     const geoJsonFeatures = features.map(feature => {
       const geometry = feature.getGeometry()
       if (!geometry) return null
       
-      const geoJson = geoJsonFormat.current.writeFeatureObject(feature)
+      // Write feature in Web Mercator (EPSG:3857) - no transformation
+      const geoJson = exportFormat.writeFeatureObject(feature)
       
       const classId = feature.get("classId")
       const paintClass = classesRef.current.find(c => c.id === classId)
@@ -247,8 +255,14 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
       order: index
     }))
     
-    const featureCollection = {
+    const featureCollection: any = {
       type: "FeatureCollection",
+      crs: {
+        type: "name",
+        properties: {
+          name: "EPSG:3857"
+        }
+      },
       metadata: {
         classes: classesMetadata,
         exportedAt: new Date().toISOString()
