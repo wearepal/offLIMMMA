@@ -1,5 +1,5 @@
 import * as React from "react"
-import { PaintClass, ToolMode } from "./utils/types"
+import { PaintClass, PaintStyle, ToolMode } from "./utils/types"
 import { getNextDistinctColor } from "./utils/utils"
 import { LayerInfo } from "./LayersPanel"
 
@@ -15,6 +15,8 @@ type PaintbrushSidebarProps = {
   setSelectedClassId: React.Dispatch<React.SetStateAction<number | null>>
   activeTool: ToolMode
   setActiveTool: React.Dispatch<React.SetStateAction<ToolMode>>
+  paintStyle: PaintStyle
+  setPaintStyle: React.Dispatch<React.SetStateAction<PaintStyle>>
   opacity: number
   setOpacity: React.Dispatch<React.SetStateAction<number>>
   isLoadingGeoJSON?: boolean
@@ -34,6 +36,8 @@ export const PaintbrushSidebar: React.FC<PaintbrushSidebarProps> = ({
   setSelectedClassId,
   activeTool,
   setActiveTool,
+  paintStyle,
+  setPaintStyle,
   opacity,
   setOpacity,
   isLoadingGeoJSON = false,
@@ -396,6 +400,35 @@ export const PaintbrushSidebar: React.FC<PaintbrushSidebarProps> = ({
             }}>
               Tools
             </span>
+
+            {/* Paint style */}
+            <div style={{ marginBottom: "12px" }}>
+              <div style={{ 
+                display: "flex", 
+                justifyContent: "space-between", 
+                alignItems: "center",
+                marginBottom: "8px"
+              }}>
+                <span style={{ 
+                  fontSize: "11px", 
+                  fontWeight: 600, 
+                  textTransform: "uppercase", 
+                  letterSpacing: "0.05em",
+                  color: "#8492a6"
+                }}>
+                  Paint Style
+                </span>
+              </div>
+              <select
+                className="input"
+                value={paintStyle}
+                onChange={(e) => setPaintStyle(e.target.value as PaintStyle)}
+                style={{ width: "100%", fontSize: "13px" }}
+              >
+                <option value={PaintStyle.Polygon}>Polygon (click vertices)</option>
+                <option value={PaintStyle.Freehand}>Freehand (drag brush)</option>
+              </select>
+            </div>
             
             <div style={{ display: "flex", gap: "8px", marginBottom: "16px" }}>
               <ToolButton 

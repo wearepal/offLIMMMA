@@ -4,7 +4,7 @@ import { GeoTIFFLayer, loadGeoTIFF } from "./utils/geotiff_utils"
 import { VectorFileLayer, loadShapefileFromComponents, loadShapefileFromZip, loadGeoJSONFile } from "./utils/vector_utils"
 import { PaintbrushToolbar } from "./PaintbrushToolbar"
 import { PaintbrushSidebar } from "./PaintbrushSidebar"
-import { PaintClass, ToolMode } from "./utils/types"
+import { PaintClass, PaintStyle, ToolMode } from "./utils/types"
 import { OfflineDownloader, hasOfflineTiles } from "./OfflineDownloader"
 import { LayerInfo } from "./LayersPanel"
 
@@ -12,6 +12,7 @@ export const PaintbrushApp: React.FC = () => {
   const [classes, setClasses] = React.useState<PaintClass[]>([])
   const [selectedClassId, setSelectedClassId] = React.useState<number | null>(null)
   const [activeTool, setActiveTool] = React.useState<ToolMode>(ToolMode.Cursor)
+  const [paintStyle, setPaintStyle] = React.useState<PaintStyle>(PaintStyle.Polygon)
   const [opacity, setOpacity] = React.useState<number>(1.0)
   const [canUndo, setCanUndo] = React.useState(false)
   const [canRedo, setCanRedo] = React.useState(false)
@@ -562,6 +563,7 @@ export const PaintbrushApp: React.FC = () => {
           <PaintbrushMap 
             ref={mapRef}
             activeTool={activeTool} 
+            paintStyle={paintStyle}
             selectedClass={selectedClass} 
             opacity={opacity} 
             classes={classes}
@@ -620,6 +622,8 @@ export const PaintbrushApp: React.FC = () => {
           setSelectedClassId={setSelectedClassId}
           activeTool={activeTool}
           setActiveTool={setActiveTool}
+          paintStyle={paintStyle}
+          setPaintStyle={setPaintStyle}
           opacity={opacity}
           setOpacity={setOpacity}
           isLoadingGeoJSON={isLoadingGeoJSON}

@@ -4,6 +4,11 @@ export type PaintClass = {
   color: string
 }
 
+export enum PaintStyle {
+  Polygon = "polygon",
+  Freehand = "freehand",
+}
+
 export enum ToolMode {
   Cursor = "cursor",
   Paint = "paint",

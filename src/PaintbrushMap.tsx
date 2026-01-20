@@ -7,7 +7,7 @@ import XYZ from "ol/source/XYZ"
 import VectorSource from "ol/source/Vector"
 import { fromLonLat, toLonLat, transform } from "ol/proj"
 import { Fill, Style, Stroke } from "ol/style"
-import { PaintClass, ToolMode } from "./utils/types"
+import { PaintClass, PaintStyle, ToolMode } from "./utils/types"
 import Feature from "ol/Feature"
 import LineString from "ol/geom/LineString"
 import Polygon from "ol/geom/Polygon"
@@ -46,6 +46,7 @@ const createRenderOrderFunction = (classes: PaintClass[]) => {
 
 type PaintbrushMapProps = {
   activeTool: ToolMode
+  paintStyle: PaintStyle
   selectedClass: PaintClass | null
   opacity: number
   classes: PaintClass[]
@@ -73,7 +74,7 @@ export type PaintbrushMapRef = {
 }
 
 export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapProps>(
-  ({ activeTool, selectedClass, opacity, classes, onUndoRedoStateChange, geoJsonData, onClassesRestored, onLoadingChange, onDataChange, geotiffLayers, vectorLayers, layers, onCachedTileUsed }, ref) => {
+  ({ activeTool, paintStyle, selectedClass, opacity, classes, onUndoRedoStateChange, geoJsonData, onClassesRestored, onLoadingChange, onDataChange, geotiffLayers, vectorLayers, layers, onCachedTileUsed }, ref) => {
   const mapRef = React.useRef<HTMLDivElement>(null)
   const [map, setMap] = React.useState<Map | null>(null)
   const vectorSourceRef = React.useRef<VectorSource | null>(null)
@@ -86,6 +87,10 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
   const vectorLayerRef = React.useRef<VectorLayer<VectorSource> | null>(null)
   const tileLayerRef = React.useRef<TileLayer<any> | null>(null)
   const classesRef = React.useRef<PaintClass[]>(classes)
+  const isDrawingPolygonRef = React.useRef(false)
+  const polygonCoordsRef = React.useRef<number[][]>([])
+  const polygonPointerCoordRef = React.useRef<number[] | null>(null)
+  const polygonPreviewFeatureRef = React.useRef<Feature | null>(null)
   
   // Undo/Redo history
   const historyRef = React.useRef<any[]>([])
@@ -920,9 +925,266 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
         currentStrokeFeatureRef.current = null
         currentStrokeCoordsRef.current = []
       }
+      // Cancel polygon drawing state too
+      isDrawingPolygonRef.current = false
+      polygonCoordsRef.current = []
+      if (polygonPreviewFeatureRef.current) {
+        vectorSourceRef.current.removeFeature(polygonPreviewFeatureRef.current)
+        polygonPreviewFeatureRef.current = null
+      }
       return
     }
 
+    const source = vectorSourceRef.current
+
+    const cancelPolygon = () => {
+      isDrawingPolygonRef.current = false
+      polygonCoordsRef.current = []
+      polygonPointerCoordRef.current = null
+      if (polygonPreviewFeatureRef.current) {
+        source.removeFeature(polygonPreviewFeatureRef.current)
+        polygonPreviewFeatureRef.current = null
+      }
+    }
+
+    const commitPolygon = () => {
+      if (!selectedClass) return
+      const coords = polygonCoordsRef.current
+      if (coords.length < 3) return
+
+      const closedCoords = [...coords]
+      const first = coords[0]
+      const last = coords[coords.length - 1]
+      const isAlreadyClosed = first[0] === last[0] && first[1] === last[1]
+      if (!isAlreadyClosed) {
+        closedCoords.push([first[0], first[1]])
+      }
+
+      const polygon = new Polygon([closedCoords])
+
+      // Remove preview feature if present
+      if (polygonPreviewFeatureRef.current) {
+        source.removeFeature(polygonPreviewFeatureRef.current)
+        polygonPreviewFeatureRef.current = null
+      }
+
+      const mergedFeatures = handleMergePolygons(polygon, selectedClass.id)
+      if (mergedFeatures.length > 0) {
+        mergedFeatures.forEach(f => source.addFeature(f))
+      } else {
+        const feature = new Feature({ geometry: polygon })
+        feature.set("strokeColor", selectedClass.color)
+        feature.set("opacity", opacity)
+        feature.set("classId", selectedClass.id)
+        source.addFeature(feature)
+      }
+
+      cancelPolygon()
+      saveState()
+    }
+
+    // Polygon (click-to-vertex) paint style
+    if (paintStyle === PaintStyle.Polygon) {
+      const updatePreview = () => {
+        if (!selectedClass) return
+        const coords = polygonCoordsRef.current
+        if (coords.length === 0) return
+
+        // Show the polygon outline while drawing; only fill once committed.
+        // Use a "rubber band" segment to the current pointer position.
+        const pointerCoord = polygonPointerCoordRef.current
+        const lineCoords =
+          pointerCoord && isDrawingPolygonRef.current
+            ? [...coords, pointerCoord]
+            : coords
+        const geometry = new LineString(lineCoords)
+
+        if (!polygonPreviewFeatureRef.current) {
+          const feature = new Feature({ geometry })
+          feature.set("strokeColor", selectedClass.color)
+          feature.set("opacity", opacity)
+          feature.set("classId", selectedClass.id)
+          polygonPreviewFeatureRef.current = feature
+          source.addFeature(feature)
+        } else {
+          polygonPreviewFeatureRef.current.setGeometry(geometry)
+        }
+      }
+
+      const isCloseToFirstVertex = (coordinate: number[]) => {
+        const coords = polygonCoordsRef.current
+        if (coords.length < 3) return false
+        const first = coords[0]
+        const firstPx = map.getPixelFromCoordinate(first)
+        const curPx = map.getPixelFromCoordinate(coordinate)
+        const dx = firstPx[0] - curPx[0]
+        const dy = firstPx[1] - curPx[1]
+        const dist = Math.hypot(dx, dy)
+        return dist <= 10 // pixels
+      }
+
+      const snapToBoundary = (coordinate: number[]): number[] => {
+        if (!selectedClass || !vectorSourceRef.current) return coordinate
+        
+        const resolution = map.getView().getResolution() || 1
+        const snapTolerance = resolution * 10 // 10 pixels in map units
+        
+        // Get all existing polygon features with different classId
+        const existingFeatures = vectorSourceRef.current.getFeatures().filter(feature => {
+          const featureClassId = feature.get("classId")
+          const geometry = feature.getGeometry()
+          return featureClassId !== null && 
+                 featureClassId !== undefined && 
+                 featureClassId !== selectedClass.id && 
+                 geometry instanceof Polygon
+        })
+        
+        if (existingFeatures.length === 0) return coordinate
+        
+        let closestPoint: number[] | null = null
+        let closestDistance = Infinity
+        let closestBoundaryCoords: number[][] | null = null
+        
+        // Check each polygon boundary
+        existingFeatures.forEach(feature => {
+          const geometry = feature.getGeometry() as Polygon
+          const exteriorRing = geometry.getLinearRing(0) // Get exterior ring
+          if (!exteriorRing) return
+          
+          // Convert LinearRing to LineString for easier manipulation
+          const ringCoords = exteriorRing.getCoordinates() as number[][]
+          const boundaryLine = new LineString(ringCoords)
+          
+          // Get the closest point on the boundary to the current coordinate
+          const closestOnBoundary = boundaryLine.getClosestPoint(coordinate)
+          const distance = Math.sqrt(
+            Math.pow(closestOnBoundary[0] - coordinate[0], 2) + 
+            Math.pow(closestOnBoundary[1] - coordinate[1], 2)
+          )
+          
+          if (distance < snapTolerance && distance < closestDistance) {
+            closestDistance = distance
+            closestPoint = closestOnBoundary
+            closestBoundaryCoords = ringCoords
+          }
+        })
+        
+        // If we found a close boundary, snap to it and trace along it
+        if (closestPoint && closestBoundaryCoords) {
+          const boundaryCoords: number[][] = closestBoundaryCoords
+          
+          // Find the segment we're closest to
+          let bestSegmentIndex = 0
+          let bestSegmentDistance = Infinity
+          let bestPointOnSegment: number[] | null = null
+          
+          for (let i = 0; i < boundaryCoords.length - 1; i++) {
+            const segStart = boundaryCoords[i]
+            const segEnd = boundaryCoords[i + 1]
+            const segLine = new LineString([segStart, segEnd])
+            const closestOnSeg = segLine.getClosestPoint(coordinate)
+            const segDist = Math.sqrt(
+              Math.pow(closestOnSeg[0] - coordinate[0], 2) + 
+              Math.pow(closestOnSeg[1] - coordinate[1], 2)
+            )
+            
+            if (segDist < bestSegmentDistance) {
+              bestSegmentDistance = segDist
+              bestSegmentIndex = i
+              bestPointOnSegment = closestOnSeg
+            }
+          }
+          
+          // If we're very close to a segment, snap to the closest point on that segment
+          // This allows tracing along the boundary
+          if (bestSegmentDistance < snapTolerance && bestPointOnSegment) {
+            return bestPointOnSegment
+          }
+          
+          return closestPoint
+        }
+        
+        return coordinate
+      }
+
+      const handleClick = (event: MapBrowserEvent<UIEvent>) => {
+        // Click to add vertex; clicking near the first vertex closes & commits (fills).
+        // Snap to boundary if near one
+        const snappedCoord = snapToBoundary(event.coordinate)
+        
+        if (isDrawingPolygonRef.current && isCloseToFirstVertex(snappedCoord)) {
+          commitPolygon()
+        } else {
+          isDrawingPolygonRef.current = true
+          polygonCoordsRef.current = [...polygonCoordsRef.current, snappedCoord]
+          polygonPointerCoordRef.current = snappedCoord
+          updatePreview()
+        }
+        event.preventDefault()
+        event.stopPropagation()
+      }
+
+      const handlePointerMove = (event: MapBrowserEvent<UIEvent>) => {
+        if (!isDrawingPolygonRef.current) return
+        const snappedCoord = snapToBoundary(event.coordinate)
+        polygonPointerCoordRef.current = snappedCoord
+        updatePreview()
+      }
+
+      const handleDblClick = (event: MapBrowserEvent<UIEvent>) => {
+        // Finish polygon on double click
+        if (!isDrawingPolygonRef.current) return
+        event.preventDefault()
+        event.stopPropagation()
+        commitPolygon()
+      }
+
+      const handleKeyDown = (event: KeyboardEvent) => {
+        const target = event.target as HTMLElement
+        if (target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.isContentEditable) return
+        if (activeTool !== ToolMode.Paint) return
+
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          cancelPolygon()
+          return
+        }
+
+        if (event.key === 'Backspace') {
+          if (!isDrawingPolygonRef.current) return
+          event.preventDefault()
+          polygonCoordsRef.current = polygonCoordsRef.current.slice(0, -1)
+          if (polygonCoordsRef.current.length === 0) {
+            cancelPolygon()
+          } else {
+            polygonPointerCoordRef.current = polygonCoordsRef.current[polygonCoordsRef.current.length - 1] ?? null
+            updatePreview()
+          }
+          return
+        }
+
+        if (event.key === 'Enter') {
+          if (!isDrawingPolygonRef.current) return
+          event.preventDefault()
+          commitPolygon()
+        }
+      }
+
+      const clickKey = map.on("click" as any, handleClick)
+      const pointerMoveKey = map.on("pointermove" as any, handlePointerMove)
+      const dblClickKey = map.on("dblclick" as any, handleDblClick)
+      window.addEventListener('keydown', handleKeyDown)
+
+      return () => {
+        unByKey(clickKey)
+        unByKey(pointerMoveKey)
+        unByKey(dblClickKey)
+        window.removeEventListener('keydown', handleKeyDown)
+        cancelPolygon()
+      }
+    }
+
+    // Freehand (existing drag brush) paint style
     const getResolution = () => map.getView().getResolution() || 1
 
     const mapDistance = (coord1: number[], coord2: number[]): number => {
@@ -1051,7 +1313,7 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
       unByKey(pointerDragKey)
       unByKey(pointerUpKey)
     }
-  }, [map, activeTool, selectedClass, opacity, saveState])
+  }, [map, activeTool, paintStyle, selectedClass, opacity, saveState])
 
   // Erase functionality
   React.useEffect(() => {
