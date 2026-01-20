@@ -29,6 +29,17 @@ declare global {
         error?: string; 
         canceled?: boolean 
       }>
+      openLayer: () => Promise<{
+        success: boolean;
+        data?: ArrayBuffer;
+        shapefileData?: { shp: ArrayBuffer; dbf: ArrayBuffer | null; prj: string | null; shx: ArrayBuffer | null };
+        filePath?: string;
+        fileName?: string;
+        fileType?: string;
+        fileSizeMB?: number;
+        error?: string;
+        canceled?: boolean;
+      }>
       quickSave: (data: string, filePath: string) => Promise<{ success: boolean; filePath?: string; error?: string }>
       exportFile: (data: string, format: string, defaultPath?: string) => Promise<{ success: boolean; filePath?: string; error?: string; canceled?: boolean }>
       onTriggerSave: (callback: () => void) => () => void

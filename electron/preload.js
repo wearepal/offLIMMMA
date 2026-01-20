@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openFile: () => ipcRenderer.invoke('open-file'),
   openGeotiff: () => ipcRenderer.invoke('open-geotiff'),
   openVector: () => ipcRenderer.invoke('open-vector'),
+  openLayer: () => ipcRenderer.invoke('open-layer'),
   quickSave: (data, filePath) => ipcRenderer.invoke('quick-save', { data, filePath }),
   exportFile: (data, format, defaultPath) => ipcRenderer.invoke('export-file', { data, format, defaultPath }),
   

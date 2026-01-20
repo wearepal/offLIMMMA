@@ -67,6 +67,16 @@ module.exports = {
       Buffer: ['buffer', 'Buffer'],
     })
   ],
-  devtool: 'source-map'
+  // Ensure relative chunk loading from dist/ when loaded via file://
+  // (Electron main loads dist/index.html from disk.)
+  devtool: 'source-map',
+  optimization: {
+    // Eliminate code-splitting so Electron can't hit stale chunk/runtime mismatches
+    // (fixes "Cannot read properties of undefined (reading 'call')" / chunk load errors)
+    splitChunks: false,
+    runtimeChunk: false,
+    moduleIds: 'deterministic',
+    chunkIds: 'deterministic'
+  }
 }
 

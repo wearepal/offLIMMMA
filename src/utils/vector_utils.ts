@@ -4,6 +4,7 @@ import JSZip from 'jszip'
 import VectorLayer from 'ol/layer/Vector'
 import VectorSource from 'ol/source/Vector'
 import GeoJSON from 'ol/format/GeoJSON'
+import KML from 'ol/format/KML'
 import { Style, Fill, Stroke, Circle } from 'ol/style'
 import Feature from 'ol/Feature'
 import type Geometry from 'ol/geom/Geometry'
@@ -231,6 +232,58 @@ export async function loadGeoJSONFile(
   return {
     layer,
     name: fileName.replace(/\.(geojson|json)$/i, ''),
+    filePath,
+    extent,
+    opacity: 0.8,
+    featureCount: olFeatures.length
+  }
+}
+
+/**
+ * Load a KML file
+ */
+export async function loadKMLFile(
+  arrayBuffer: ArrayBuffer,
+  fileName: string,
+  filePath: string
+): Promise<VectorFileLayer> {
+  // Convert ArrayBuffer to string
+  const decoder = new TextDecoder('utf-8')
+  const kmlString = decoder.decode(arrayBuffer)
+
+  // Parse KML. Most KML is EPSG:4326; we project features into EPSG:3857.
+  const format = new KML({
+    extractStyles: true
+  })
+
+  const olFeatures = format.readFeatures(kmlString, {
+    dataProjection: 'EPSG:4326',
+    featureProjection: 'EPSG:3857'
+  }) as Feature<Geometry>[]
+
+  if (olFeatures.length === 0) {
+    throw new Error('No features found in KML')
+  }
+
+  const source = new VectorSource<Feature<Geometry>>({
+    features: olFeatures
+  })
+
+  // If the KML contains styles, let them render; otherwise provide a default style.
+  const hasAnyStyle = olFeatures.some((f) => typeof (f as any).getStyleFunction?.() === 'function' || typeof (f as any).getStyle?.() === 'function')
+  const color = getRandomColor()
+
+  const layer = new VectorLayer({
+    source,
+    style: hasAnyStyle ? undefined : createVectorStyle(color),
+    opacity: 0.8
+  })
+
+  const extent = source.getExtent() as [number, number, number, number]
+
+  return {
+    layer,
+    name: fileName.replace(/\.kml$/i, ''),
     filePath,
     extent,
     opacity: 0.8,

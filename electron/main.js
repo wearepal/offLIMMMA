@@ -77,6 +77,10 @@ function parseBoundingBox() {
 function createWindow() {
   // Suppress Electron cache/quota errors (harmless but noisy)
   app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor')
+  // In local dev (webpack watch), disable caching to avoid stale chunk/runtime mismatches
+  if (!app.isPackaged) {
+    app.commandLine.appendSwitch('disable-http-cache')
+  }
   
   // Create the browser window
   mainWindow = new BrowserWindow({
@@ -123,6 +127,35 @@ function createWindow() {
   
   // Load the index.html file
   mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
+
+  // In local dev (webpack watch), reload the window when dist/ changes
+  // so renderer.js + its async chunks stay in sync.
+  if (!app.isPackaged) {
+    try {
+      const distDir = path.join(__dirname, '../dist')
+      let reloadTimer = null
+      fs.watch(distDir, { recursive: true }, (eventType, filename) => {
+        if (!filename) return
+        if (!filename.endsWith('.js') && !filename.endsWith('.html')) return
+        if (!mainWindow || mainWindow.isDestroyed()) return
+
+        // debounce rapid rebuild events
+        if (reloadTimer) clearTimeout(reloadTimer)
+        reloadTimer = setTimeout(() => {
+          try {
+            // Clear cache + reload to prevent runtime/chunk mismatches
+            mainWindow.webContents.session.clearCache().finally(() => {
+              mainWindow.webContents.reloadIgnoringCache()
+            })
+          } catch (e) {
+            // ignore
+          }
+        }, 250)
+      })
+    } catch (e) {
+      console.warn('Failed to watch dist for reload:', e.message)
+    }
+  }
   
   // Also set it after load as backup
   mainWindow.webContents.once('did-finish-load', () => {
@@ -445,14 +478,15 @@ ipcMain.handle('open-geotiff', async () => {
   return { success: false, canceled: true }
 })
 
-// Open vector file (Shapefile, GeoJSON)
+// Open vector file (Shapefile, GeoJSON, KML)
 ipcMain.handle('open-vector', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     title: 'Open Vector File',
     filters: [
-      { name: 'All Vector Files', extensions: ['shp', 'zip', 'geojson', 'json'] },
+      { name: 'All Vector Files', extensions: ['shp', 'zip', 'geojson', 'json', 'kml'] },
       { name: 'Shapefile', extensions: ['shp', 'zip'] },
       { name: 'GeoJSON', extensions: ['geojson', 'json'] },
+      { name: 'KML', extensions: ['kml'] },
       { name: 'All Files', extensions: ['*'] }
     ],
     properties: ['openFile']
@@ -488,6 +522,8 @@ ipcMain.handle('open-vector', async () => {
       fileType = 'shapefile'
     } else if (ext === '.geojson' || ext === '.json') {
       fileType = 'geojson'
+    } else if (ext === '.kml') {
+      fileType = 'kml'
     }
     
     try {
@@ -552,6 +588,131 @@ ipcMain.handle('open-vector', async () => {
       return { success: false, error: error.message }
     }
   }
+  return { success: false, canceled: true }
+})
+
+// Open a layer file (GeoTIFF or Vector). Discerns type by extension.
+ipcMain.handle('open-layer', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Import Layer',
+    filters: [
+      { name: 'Supported Files', extensions: ['tif', 'tiff', 'geotiff', 'shp', 'zip', 'geojson', 'json', 'kml'] },
+      { name: 'GeoTIFF', extensions: ['tif', 'tiff', 'geotiff'] },
+      { name: 'Vector', extensions: ['shp', 'zip', 'geojson', 'json', 'kml'] },
+      { name: 'All Files', extensions: ['*'] }
+    ],
+    properties: ['openFile']
+  })
+
+  if (!result.canceled && result.filePaths.length > 0) {
+    const filePath = result.filePaths[0]
+    const fileName = path.basename(filePath)
+    const ext = path.extname(filePath).toLowerCase()
+    const dir = path.dirname(filePath)
+    const baseName = path.basename(filePath, ext)
+
+    // Check file size
+    const stats = fs.statSync(filePath)
+    const fileSizeMB = stats.size / (1024 * 1024)
+
+    // Apply limits similar to existing handlers
+    const isGeotiff = ext === '.tif' || ext === '.tiff' || ext === '.geotiff'
+    if (isGeotiff && fileSizeMB > 1024) {
+      await dialog.showMessageBox(mainWindow, {
+        type: 'error',
+        buttons: ['OK'],
+        title: 'File Too Large',
+        message: `This GeoTIFF is ${fileSizeMB.toFixed(0)}MB which exceeds the 1GB limit.`,
+      })
+      return { success: false, error: 'File too large (max 1GB)' }
+    }
+    if (!isGeotiff && fileSizeMB > 500) {
+      await dialog.showMessageBox(mainWindow, {
+        type: 'error',
+        buttons: ['OK'],
+        title: 'File Too Large',
+        message: `This file is ${fileSizeMB.toFixed(0)}MB which exceeds the 500MB limit for vector files.`,
+      })
+      return { success: false, error: 'File too large (max 500MB)' }
+    }
+
+    // Determine file type
+    let fileType = 'unknown'
+    if (isGeotiff) {
+      fileType = 'geotiff'
+    } else if (ext === '.zip') {
+      fileType = 'shapefile-zip'
+    } else if (ext === '.shp') {
+      fileType = 'shapefile'
+    } else if (ext === '.geojson' || ext === '.json') {
+      fileType = 'geojson'
+    } else if (ext === '.kml') {
+      fileType = 'kml'
+    }
+
+    try {
+      // For .shp files, also read the companion files
+      if (ext === '.shp') {
+        const shapefileData = {
+          shp: fs.readFileSync(filePath).buffer,
+          dbf: null,
+          prj: null,
+          shx: null
+        }
+
+        // Try to read companion files
+        const dbfPath = path.join(dir, baseName + '.dbf')
+        const prjPath = path.join(dir, baseName + '.prj')
+        const shxPath = path.join(dir, baseName + '.shx')
+
+        // Also check for uppercase extensions
+        const dbfPathUpper = path.join(dir, baseName + '.DBF')
+        const prjPathUpper = path.join(dir, baseName + '.PRJ')
+        const shxPathUpper = path.join(dir, baseName + '.SHX')
+
+        if (fs.existsSync(dbfPath)) {
+          shapefileData.dbf = fs.readFileSync(dbfPath).buffer
+        } else if (fs.existsSync(dbfPathUpper)) {
+          shapefileData.dbf = fs.readFileSync(dbfPathUpper).buffer
+        }
+
+        if (fs.existsSync(prjPath)) {
+          shapefileData.prj = fs.readFileSync(prjPath).toString()
+        } else if (fs.existsSync(prjPathUpper)) {
+          shapefileData.prj = fs.readFileSync(prjPathUpper).toString()
+        }
+
+        if (fs.existsSync(shxPath)) {
+          shapefileData.shx = fs.readFileSync(shxPath).buffer
+        } else if (fs.existsSync(shxPathUpper)) {
+          shapefileData.shx = fs.readFileSync(shxPathUpper).buffer
+        }
+
+        return {
+          success: true,
+          shapefileData,
+          filePath,
+          fileName,
+          fileType,
+          fileSizeMB
+        }
+      }
+
+      // Other types: read single file
+      const data = fs.readFileSync(filePath)
+      return {
+        success: true,
+        data: data.buffer,
+        filePath,
+        fileName,
+        fileType,
+        fileSizeMB
+      }
+    } catch (error) {
+      return { success: false, error: error.message }
+    }
+  }
+
   return { success: false, canceled: true }
 })
 

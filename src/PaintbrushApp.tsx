@@ -1,7 +1,7 @@
 import * as React from "react"
 import { PaintbrushMap, PaintbrushMapRef, BoundingBox } from "./PaintbrushMap"
 import { GeoTIFFLayer, loadGeoTIFF } from "./utils/geotiff_utils"
-import { VectorFileLayer, loadShapefileFromComponents, loadShapefileFromZip, loadGeoJSONFile } from "./utils/vector_utils"
+import { VectorFileLayer, loadShapefileFromComponents, loadShapefileFromZip, loadGeoJSONFile, loadKMLFile } from "./utils/vector_utils"
 import { PaintbrushToolbar } from "./PaintbrushToolbar"
 import { PaintbrushSidebar } from "./PaintbrushSidebar"
 import { PaintClass, PaintStyle, ToolMode } from "./utils/types"
@@ -319,65 +319,11 @@ export const PaintbrushApp: React.FC = () => {
     return mapRef.current?.getBounds() ?? null
   }
 
-  // GeoTIFF handling
-  const handleLoadGeotiff = React.useCallback(async () => {
+  // Unified import (GeoTIFF + Vector). Discerns type by extension in main process.
+  const handleImportLayer = React.useCallback(async () => {
     try {
       setLoadingMessage("Selecting file...")
-      const result = await window.electronAPI.openGeotiff()
-      
-      if (result.success && result.data) {
-        setIsLoadingLayer(true)
-        setLoadingMessage(`Loading ${result.fileName}...`)
-        
-        // Use setTimeout to allow the UI to update before heavy processing
-        await new Promise(resolve => setTimeout(resolve, 50))
-        
-        setLoadingMessage(`Processing GeoTIFF (${result.fileSizeMB?.toFixed(1) || '?'}MB)...`)
-        await new Promise(resolve => setTimeout(resolve, 50))
-        
-        // Load from ArrayBuffer with automatic downsampling
-        const geotiffLayer = await loadGeoTIFF(
-          result.data,
-          result.fileName || 'GeoTIFF',
-          result.filePath || ''
-        )
-        
-        setGeotiffLayers(prev => [...prev, geotiffLayer])
-        
-        // Add to unified layers (insert at top, before OSM)
-        const newLayerInfo: LayerInfo = {
-          id: `geotiff-${Date.now()}`,
-          name: result.fileName || 'GeoTIFF',
-          type: "geotiff",
-          opacity: 0.7,
-          visible: true,
-          filePath: result.filePath,
-          extent: geotiffLayer.extent
-        }
-        setLayers(prev => [newLayerInfo, ...prev])
-        
-        // Fit map to the GeoTIFF extent
-        mapRef.current?.fitToExtent(geotiffLayer.extent)
-        
-        setIsLoadingLayer(false)
-        setLoadingMessage("")
-      } else if (result.error) {
-        // Error was already shown by main process dialog
-        console.log('GeoTIFF load cancelled or failed:', result.error)
-      }
-    } catch (error) {
-      console.error('Failed to load GeoTIFF:', error)
-      setIsLoadingLayer(false)
-      setLoadingMessage("")
-      alert('Failed to load GeoTIFF: ' + (error as Error).message)
-    }
-  }, [])
-
-  // Vector file handling (Shapefile, GeoJSON)
-  const handleLoadVector = React.useCallback(async () => {
-    try {
-      setLoadingMessage("Selecting file...")
-      const result = await window.electronAPI.openVector()
+      const result = await window.electronAPI.openLayer()
       
       if (result.success && (result.data || result.shapefileData)) {
         setIsLoadingLayer(true)
@@ -387,60 +333,83 @@ export const PaintbrushApp: React.FC = () => {
         
         setLoadingMessage(`Processing ${result.fileType} (${result.fileSizeMB?.toFixed(1) || '?'}MB)...`)
         await new Promise(resolve => setTimeout(resolve, 50))
-        
-        let vectorLayer: VectorFileLayer
-        
-        if (result.fileType === 'shapefile' && result.shapefileData) {
-          // Load from individual .shp, .dbf, .prj files
-          vectorLayer = await loadShapefileFromComponents(
-            result.shapefileData, 
-            result.fileName || 'Shapefile', 
+
+        if (result.fileType === 'geotiff' && result.data) {
+          const geotiffLayer = await loadGeoTIFF(
+            result.data,
+            result.fileName || 'GeoTIFF',
             result.filePath || ''
           )
-        } else if (result.fileType === 'shapefile-zip' && result.data) {
-          // Load from zipped shapefile
-          vectorLayer = await loadShapefileFromZip(
-            result.data, 
-            result.fileName || 'Shapefile', 
-            result.filePath || ''
-          )
-        } else if (result.fileType === 'geojson' && result.data) {
-          vectorLayer = await loadGeoJSONFile(
-            result.data, 
-            result.fileName || 'GeoJSON', 
-            result.filePath || ''
-          )
+
+          setGeotiffLayers(prev => [...prev, geotiffLayer])
+
+          const newLayerInfo: LayerInfo = {
+            id: `geotiff-${Date.now()}`,
+            name: result.fileName || 'GeoTIFF',
+            type: "geotiff",
+            opacity: 0.7,
+            visible: true,
+            filePath: result.filePath,
+            extent: geotiffLayer.extent
+          }
+          setLayers(prev => [newLayerInfo, ...prev])
+          mapRef.current?.fitToExtent(geotiffLayer.extent)
         } else {
-          throw new Error('Unsupported file type: ' + result.fileType)
+          let vectorLayer: VectorFileLayer
+
+          if (result.fileType === 'shapefile' && result.shapefileData) {
+            vectorLayer = await loadShapefileFromComponents(
+              result.shapefileData,
+              result.fileName || 'Shapefile',
+              result.filePath || ''
+            )
+          } else if (result.fileType === 'shapefile-zip' && result.data) {
+            vectorLayer = await loadShapefileFromZip(
+              result.data,
+              result.fileName || 'Shapefile',
+              result.filePath || ''
+            )
+          } else if (result.fileType === 'geojson' && result.data) {
+            vectorLayer = await loadGeoJSONFile(
+              result.data,
+              result.fileName || 'GeoJSON',
+              result.filePath || ''
+            )
+          } else if (result.fileType === 'kml' && result.data) {
+            vectorLayer = await loadKMLFile(
+              result.data,
+              result.fileName || 'KML',
+              result.filePath || ''
+            )
+          } else {
+            throw new Error('Unsupported file type: ' + result.fileType)
+          }
+
+          setVectorLayers(prev => [...prev, vectorLayer])
+
+          const newLayerInfo: LayerInfo = {
+            id: `vector-${Date.now()}`,
+            name: vectorLayer.name,
+            type: "vector",
+            opacity: 0.8,
+            visible: true,
+            filePath: result.filePath,
+            extent: vectorLayer.extent
+          }
+          setLayers(prev => [newLayerInfo, ...prev])
+          mapRef.current?.fitToExtent(vectorLayer.extent)
         }
-        
-        setVectorLayers(prev => [...prev, vectorLayer])
-        
-        // Add to unified layers
-        const newLayerInfo: LayerInfo = {
-          id: `vector-${Date.now()}`,
-          name: vectorLayer.name,
-          type: "vector",
-          opacity: 0.8,
-          visible: true,
-          filePath: result.filePath,
-          extent: vectorLayer.extent
-        }
-        setLayers(prev => [newLayerInfo, ...prev])
-        
-        // Fit map to the vector extent
-        mapRef.current?.fitToExtent(vectorLayer.extent)
         
         setIsLoadingLayer(false)
         setLoadingMessage("")
       } else if (result.error) {
-        console.log('Vector load cancelled or failed:', result.error)
+        console.log('Import cancelled or failed:', result.error)
       }
     } catch (error) {
-      console.error('Failed to load vector file:', error)
+      console.error('Failed to import layer:', error)
       setIsLoadingLayer(false)
       setLoadingMessage("")
-      alert('Failed to load vector file: ' + (error as Error).message)
+      alert('Failed to import layer: ' + (error as Error).message)
     }
   }, [])
 
@@ -629,8 +598,7 @@ export const PaintbrushApp: React.FC = () => {
           isLoadingGeoJSON={isLoadingGeoJSON}
           layers={layers}
           onLayersChange={setLayers}
-          onAddGeotiff={handleLoadGeotiff}
-          onAddVector={handleLoadVector}
+          onImportLayer={handleImportLayer}
           onZoomToLayer={handleZoomToLayer}
           onRemoveLayer={handleRemoveLayer}
         />
