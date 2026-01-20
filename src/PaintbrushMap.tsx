@@ -6,10 +6,11 @@ import OSM from "ol/source/OSM"
 import XYZ from "ol/source/XYZ"
 import VectorSource from "ol/source/Vector"
 import { fromLonLat, toLonLat, transform } from "ol/proj"
-import { Fill, Style, Stroke } from "ol/style"
+import { Fill, Style, Stroke, Circle as CircleStyle } from "ol/style"
 import { PaintClass, PaintStyle, ToolMode } from "./utils/types"
 import Feature from "ol/Feature"
 import LineString from "ol/geom/LineString"
+import Point from "ol/geom/Point"
 import Polygon from "ol/geom/Polygon"
 import DragPan from "ol/interaction/DragPan"
 import MapBrowserEvent from "ol/MapBrowserEvent"
@@ -91,6 +92,8 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
   const polygonCoordsRef = React.useRef<number[][]>([])
   const polygonPointerCoordRef = React.useRef<number[] | null>(null)
   const polygonPreviewFeatureRef = React.useRef<Feature | null>(null)
+  const snapIndicatorFeatureRef = React.useRef<Feature | null>(null)
+  const TRANSIENT_KEY = "__transient"
   
   // Undo/Redo history
   const historyRef = React.useRef<any[]>([])
@@ -104,7 +107,7 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
     const source = vectorSourceRef.current
     if (!source || isRestoringStateRef.current) return
     
-    const features = source.getFeatures()
+    const features = source.getFeatures().filter(feature => !feature.get(TRANSIENT_KEY))
     const state = features.map(feature => {
       const geometry = feature.getGeometry()
       if (!geometry) return null
@@ -221,7 +224,7 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
   const exportGeoJSON = React.useCallback((): string | null => {
     if (!vectorSourceRef.current || !geoJsonFormat.current) return null
     
-    const features = vectorSourceRef.current.getFeatures()
+    const features = vectorSourceRef.current.getFeatures().filter(feature => !feature.get(TRANSIENT_KEY))
     if (features.length === 0) return null
     
     // Create GeoJSON format configured for EPSG:3857 export
@@ -937,6 +940,40 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
 
     const source = vectorSourceRef.current
 
+    const setSnapIndicator = (coordinate: number[] | null) => {
+      if (!source) return
+      if (!coordinate) {
+        if (snapIndicatorFeatureRef.current) {
+          source.removeFeature(snapIndicatorFeatureRef.current)
+          snapIndicatorFeatureRef.current = null
+        }
+        return
+      }
+
+      if (!snapIndicatorFeatureRef.current) {
+        const feature = new Feature({
+          geometry: new Point(coordinate)
+        })
+        feature.set(TRANSIENT_KEY, true)
+        feature.setStyle(new Style({
+          image: new CircleStyle({
+            radius: 4,
+            fill: new Fill({ color: "#22c55e" }),
+            stroke: new Stroke({ color: "#ffffff", width: 2 })
+          })
+        }))
+        snapIndicatorFeatureRef.current = feature
+        source.addFeature(feature)
+      } else {
+        const geom = snapIndicatorFeatureRef.current.getGeometry()
+        if (geom instanceof Point) {
+          geom.setCoordinates(coordinate)
+        } else {
+          snapIndicatorFeatureRef.current.setGeometry(new Point(coordinate))
+        }
+      }
+    }
+
     const cancelPolygon = () => {
       isDrawingPolygonRef.current = false
       polygonCoordsRef.current = []
@@ -945,6 +982,7 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
         source.removeFeature(polygonPreviewFeatureRef.current)
         polygonPreviewFeatureRef.current = null
       }
+      setSnapIndicator(null)
     }
 
     const commitPolygon = () => {
@@ -960,7 +998,80 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
         closedCoords.push([first[0], first[1]])
       }
 
-      const polygon = new Polygon([closedCoords])
+      let polygon = new Polygon([closedCoords])
+
+      // Make boundaries flush (no overlap, no gap) across zoom levels:
+      // do boolean ops with a fixed precision model (EPSG:3857 units) instead of a zoom-based buffer.
+      try {
+        const jsts = (window as any).jsts
+        if (jsts?.io?.GeoJSONReader && jsts?.io?.GeoJSONWriter) {
+          const jstsReader = new jsts.io.GeoJSONReader()
+          const jstsWriter = new jsts.io.GeoJSONWriter()
+
+          // Use a fixed precision grid in meters (Web Mercator units).
+          // 1e6 => 1 micrometer grid; effectively "flush" for mapping purposes.
+          const precisionScale = 1e6
+          const reducer =
+            jsts?.precision?.GeometryPrecisionReducer && jsts?.geom?.PrecisionModel
+              ? new jsts.precision.GeometryPrecisionReducer(new jsts.geom.PrecisionModel(precisionScale))
+              : null
+          if (reducer) {
+            reducer.setChangePrecisionModel(true)
+            reducer.setRemoveCollapsedComponents(true)
+          }
+
+          const newPolyGeo = geoJsonFormat.current.writeGeometryObject(polygon)
+          let newJstsGeom = jstsReader.read(newPolyGeo)
+          try { newJstsGeom = newJstsGeom.buffer(0) } catch {}
+          if (reducer) {
+            try { newJstsGeom = reducer.reduce(newJstsGeom) } catch {}
+          }
+
+          // subtract every other-class polygon that intersects/touches
+          const others = source.getFeatures().filter(f => {
+            if (f.get(TRANSIENT_KEY)) return false
+            const classId = f.get("classId")
+            if (classId == null || classId === selectedClass.id) return false
+            const g = f.getGeometry()
+            return g instanceof Polygon
+          })
+
+          for (const f of others) {
+            const g = f.getGeometry() as Polygon
+            const otherGeo = geoJsonFormat.current.writeGeometryObject(g)
+            let otherJsts = jstsReader.read(otherGeo)
+            try { otherJsts = otherJsts.buffer(0) } catch {}
+            if (reducer) {
+              try { otherJsts = reducer.reduce(otherJsts) } catch {}
+            }
+
+            // only subtract if nearby/intersecting
+            if (newJstsGeom.intersects(otherJsts) || newJstsGeom.touches(otherJsts)) {
+              try {
+                const diff = newJstsGeom.difference(otherJsts)
+                newJstsGeom = diff
+                try { newJstsGeom = newJstsGeom.buffer(0) } catch {}
+                if (reducer) {
+                  try { newJstsGeom = reducer.reduce(newJstsGeom) } catch {}
+                }
+              } catch {
+                // ignore failures, keep current geometry
+              }
+            }
+          }
+
+          const trimmedGeo = jstsWriter.write(newJstsGeom)
+          const trimmedOl = geoJsonFormat.current.readGeometry(trimmedGeo, {
+            dataProjection: 'EPSG:3857',
+            featureProjection: 'EPSG:3857'
+          }) as Polygon
+          if (trimmedOl) {
+            polygon = trimmedOl
+          }
+        }
+      } catch (e) {
+        // If JSTS isn't available or something fails, just keep the original polygon.
+      }
 
       // Remove preview feature if present
       if (polygonPreviewFeatureRef.current) {
@@ -1027,8 +1138,7 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
         if (!selectedClass || !vectorSourceRef.current) return coordinate
         
         const resolution = map.getView().getResolution() || 1
-        const snapTolerance = resolution * 10 // 10 pixels in map units
-        
+
         // Get all existing polygon features with different classId
         const existingFeatures = vectorSourceRef.current.getFeatures().filter(feature => {
           const featureClassId = feature.get("classId")
@@ -1038,6 +1148,16 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
                  featureClassId !== selectedClass.id && 
                  geometry instanceof Polygon
         })
+
+        // Context-sensitive snapping:
+        // - If cursor is *inside* another-class polygon: allow longer snap range (30px)
+        // - If cursor is *outside*: smaller snap range (5px)
+        const isInsideOtherClass = existingFeatures.some(feature => {
+          const geometry = feature.getGeometry()
+          return geometry instanceof Polygon && geometry.intersectsCoordinate(coordinate)
+        })
+        const snapTolerancePixels = isInsideOtherClass ? 35 : 10
+        const snapTolerance = resolution * snapTolerancePixels // pixels -> map units
         
         if (existingFeatures.length === 0) return coordinate
         
@@ -1098,12 +1218,15 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
           // If we're very close to a segment, snap to the closest point on that segment
           // This allows tracing along the boundary
           if (bestSegmentDistance < snapTolerance && bestPointOnSegment) {
+            setSnapIndicator(bestPointOnSegment)
             return bestPointOnSegment
           }
           
+          setSnapIndicator(closestPoint)
           return closestPoint
         }
         
+        setSnapIndicator(null)
         return coordinate
       }
 
@@ -1120,6 +1243,8 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
           polygonPointerCoordRef.current = snappedCoord
           updatePreview()
         }
+        // Once the vertex is placed, hide the snap dot until we snap again
+        setSnapIndicator(null)
         event.preventDefault()
         event.stopPropagation()
       }
@@ -1328,7 +1453,8 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
       })
       
       if (features && features.length > 0) {
-        const actualFeatures = features.filter(f => f instanceof Feature) as Feature[]
+        const actualFeatures = (features.filter(f => f instanceof Feature) as Feature[])
+          .filter(f => !(f as Feature).get?.(TRANSIENT_KEY))
         
         if (actualFeatures.length > 0) {
           const featureToRemove = actualFeatures[0]

@@ -515,25 +515,16 @@ export const PaintbrushSidebar: React.FC<PaintbrushSidebarProps> = ({
               }}>
                 Map Layers
               </span>
-            </div>
-
-            {/* Add Layer Buttons */}
-            <div style={{ 
-              display: "flex", 
-              gap: "8px", 
-              marginBottom: "12px"
-            }}>
               <button 
                 className="btn btn-primary btn-sm"
                 onClick={onImportLayer}
                 title="Import a GeoTIFF or vector file"
-                style={{ flex: 1 }}
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M12 5v14" />
-                  <path d="M5 12h14" />
+                  <line x1="12" y1="5" x2="12" y2="19"/>
+                  <line x1="5" y1="12" x2="19" y2="12"/>
                 </svg>
-                Import
+                Import Layer
               </button>
             </div>
 
