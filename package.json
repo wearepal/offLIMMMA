@@ -1,6 +1,6 @@
 {
   "name": "offlimmma",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A standalone offline map annotation and polygon painting application",
   "main": "electron/main.js",
   "scripts": {
