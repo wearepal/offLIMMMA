@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  builder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      # Mount release directory to get built packages
+      - ./release:/app/release
+      # Cache directory for electron-builder (speeds up subsequent builds)
+      - electron-builder-cache:/app/.cache/electron-builder
+    environment:
+      - ELECTRON_BUILDER_CACHE=/app/.cache/electron-builder
+    # Override command to build macOS package (using zip format for Linux compatibility)
+    command: npm run package:mac:zip
+
+volumes:
+  electron-builder-cache:

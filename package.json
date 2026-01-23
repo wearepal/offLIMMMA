@@ -11,10 +11,13 @@
     "package": "npm run build && electron-builder",
     "package:win": "npm run build && electron-builder --win",
     "package:mac": "npm run build && electron-builder --mac",
+    "package:mac:zip": "npm run build && electron-builder --mac --config.mac.target=zip",
     "package:linux": "npm run build && electron-builder --linux",
     "package:win:bbox": "node scripts/package-with-bbox.js --win",
     "package:mac:bbox": "node scripts/package-with-bbox.js --mac",
-    "package:linux:bbox": "node scripts/package-with-bbox.js --linux"
+    "package:linux:bbox": "node scripts/package-with-bbox.js --linux",
+    "docker:build:mac": "docker build -t offlimmma-builder . && docker run --rm -v \"%cd%/release:/app/release\" -v \"%cd%/.cache:/app/.cache\" offlimmma-builder npm run package:mac",
+    "docker:build:mac:bbox": "docker build -t offlimmma-builder . && docker run --rm -v \"%cd%/release:/app/release\" -v \"%cd%/.cache:/app/.cache\" offlimmma-builder npm run package:mac:bbox"
   },
   "build": {
     "appId": "com.offlimmma.app",
@@ -35,7 +38,8 @@
     },
     "mac": {
       "target": "dmg",
-      "icon": "public/icon.icns"
+      "icon": "public/icon.icns",
+      "category": "public.app-category.utilities"
     },
     "linux": {
       "target": "AppImage",

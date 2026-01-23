@@ -78,7 +78,7 @@ Create standalone executables for distribution:
 # Windows
 npm run package:win
 
-# macOS
+# macOS (requires macOS)
 npm run package:mac
 
 # Linux
@@ -90,6 +90,43 @@ npm run package
 
 Built packages will be available in the `release/` directory.
 
+### Building macOS Packages on Windows/Linux (Docker)
+
+If you're on Windows or Linux and need to build macOS packages, you can use Docker:
+
+**Using PowerShell (Windows):**
+```powershell
+.\scripts\docker-build-mac.ps1
+```
+
+**Using Bash (Linux/WSL/Git Bash):**
+```bash
+chmod +x scripts/docker-build-mac.sh
+./scripts/docker-build-mac.sh
+```
+
+**Using Docker Compose:**
+```bash
+docker-compose run --rm builder npm run package:mac:zip
+```
+
+**Using Docker directly:**
+```bash
+# Build the Docker image
+docker build -t offlimmma-builder .
+
+# Build macOS package (as ZIP, since DMG requires macOS tools)
+docker run --rm -v "$(pwd)/release:/app/release" -v "$(pwd)/.cache:/app/.cache" offlimmma-builder npm run package:mac:zip
+```
+
+**Note:** Building macOS packages on non-macOS systems has some limitations:
+- Code signing will be skipped (already configured with `forceCodeSigning: false`)
+- The package will be built as a ZIP file instead of DMG (DMG requires macOS-specific tools)
+- Users can extract the ZIP and run the `.app` bundle directly
+- Some advanced macOS features may not be available
+
+The built ZIP file will be available in the `release/` directory. To convert it to a DMG on macOS, you can use the `hdiutil` command or rebuild using `npm run package:mac` on a Mac.
+
 ### Building with Default Bounding Box
 
 You can bake a default bounding box into the packaged executable:
@@ -98,8 +135,11 @@ You can bake a default bounding box into the packaged executable:
 # Windows with default bounding box
 npm run package:win:bbox -- --bbox=106.8,-6.2,106.9,-6.1,12 --epsg=4326
 
-# macOS with default bounding box  
+# macOS with default bounding box (requires macOS)
 npm run package:mac:bbox -- --bbox=106.8,-6.2,106.9,-6.1,12
+
+# macOS with default bounding box via Docker (Windows/Linux) - builds as ZIP
+docker run --rm -v "$(pwd)/release:/app/release" -v "$(pwd)/.cache:/app/.cache" offlimmma-builder npm run package:mac:zip -- --bbox=106.8,-6.2,106.9,-6.1,12
 
 # Linux with default bounding box
 npm run package:linux:bbox -- --bbox=106.8,-6.2,106.9,-6.1,12 --epsg=4326
