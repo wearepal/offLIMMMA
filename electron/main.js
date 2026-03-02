@@ -269,7 +269,10 @@ function createWindow() {
 }
 
 // App ready
-app.whenReady().then(createWindow)
+app.whenReady().then(() => {
+  createWindow()
+  registerOpenShapefileHandler()
+})
 
 // Handle app quit with unsaved changes check
 app.on('before-quit', (e) => {
@@ -715,6 +718,72 @@ ipcMain.handle('open-layer', async () => {
 
   return { success: false, canceled: true }
 })
+
+// Open a shapefile only (for adding to a paint class). Registered in whenReady so it's always available.
+function registerOpenShapefileHandler() {
+  ipcMain.handle('open-shapefile', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Add from Shapefile',
+      filters: [
+        { name: 'Shapefile', extensions: ['shp', 'zip'] },
+        { name: 'All Files', extensions: ['*'] }
+      ],
+      properties: ['openFile']
+    })
+
+    if (!result.canceled && result.filePaths.length > 0) {
+      const filePath = result.filePaths[0]
+      const fileName = path.basename(filePath)
+      const ext = path.extname(filePath).toLowerCase()
+      const dir = path.dirname(filePath)
+      const baseName = path.basename(filePath, ext)
+
+      const stats = fs.statSync(filePath)
+      const fileSizeMB = stats.size / (1024 * 1024)
+      if (fileSizeMB > 500) {
+        await dialog.showMessageBox(mainWindow, {
+          type: 'error',
+          buttons: ['OK'],
+          title: 'File Too Large',
+          message: `This file is ${fileSizeMB.toFixed(0)}MB which exceeds the 500MB limit.`
+        })
+        return { success: false, error: 'File too large (max 500MB)' }
+      }
+
+      try {
+        if (ext === '.shp') {
+          const shapefileData = {
+            shp: fs.readFileSync(filePath).buffer,
+            dbf: null,
+            prj: null,
+            shx: null
+          }
+          const dbfPath = path.join(dir, baseName + '.dbf')
+          const prjPath = path.join(dir, baseName + '.prj')
+          const shxPath = path.join(dir, baseName + '.shx')
+          const dbfPathUpper = path.join(dir, baseName + '.DBF')
+          const prjPathUpper = path.join(dir, baseName + '.PRJ')
+          const shxPathUpper = path.join(dir, baseName + '.SHX')
+          if (fs.existsSync(dbfPath)) shapefileData.dbf = fs.readFileSync(dbfPath).buffer
+          else if (fs.existsSync(dbfPathUpper)) shapefileData.dbf = fs.readFileSync(dbfPathUpper).buffer
+          if (fs.existsSync(prjPath)) shapefileData.prj = fs.readFileSync(prjPath).toString()
+          else if (fs.existsSync(prjPathUpper)) shapefileData.prj = fs.readFileSync(prjPathUpper).toString()
+          if (fs.existsSync(shxPath)) shapefileData.shx = fs.readFileSync(shxPath).buffer
+          else if (fs.existsSync(shxPathUpper)) shapefileData.shx = fs.readFileSync(shxPathUpper).buffer
+          return { success: true, fileType: 'shapefile', shapefileData, fileName, filePath }
+        }
+        if (ext === '.zip') {
+          const data = fs.readFileSync(filePath)
+          return { success: true, fileType: 'shapefile-zip', data: data.buffer, fileName, filePath }
+        }
+        return { success: false, error: 'Please select a .shp or .zip shapefile' }
+      } catch (error) {
+        return { success: false, error: error.message }
+      }
+    }
+    return { success: false, canceled: true }
+  })
+}
 
 // Export as different formats
 ipcMain.handle('export-file', async (event, { data, format, defaultPath }) => {

@@ -1,7 +1,7 @@
 import * as React from "react"
 import { PaintbrushMap, PaintbrushMapRef, BoundingBox } from "./PaintbrushMap"
 import { GeoTIFFLayer, loadGeoTIFF } from "./utils/geotiff_utils"
-import { VectorFileLayer, loadShapefileFromComponents, loadShapefileFromZip, loadGeoJSONFile, loadKMLFile } from "./utils/vector_utils"
+import { VectorFileLayer, loadShapefileFromComponents, loadShapefileFromZip, loadGeoJSONFile, loadKMLFile, parseShapefileToOlFeaturesFromComponents, parseShapefileToOlFeaturesFromZip } from "./utils/vector_utils"
 import { PaintbrushToolbar } from "./PaintbrushToolbar"
 import { PaintbrushSidebar } from "./PaintbrushSidebar"
 import { PaintClass, PaintStyle, ToolMode } from "./utils/types"
@@ -14,6 +14,7 @@ export const PaintbrushApp: React.FC = () => {
   const [activeTool, setActiveTool] = React.useState<ToolMode>(ToolMode.Cursor)
   const [paintStyle, setPaintStyle] = React.useState<PaintStyle>(PaintStyle.Polygon)
   const [opacity, setOpacity] = React.useState<number>(1.0)
+  const [snapToBoundaryEnabled, setSnapToBoundaryEnabled] = React.useState(true)
   const [canUndo, setCanUndo] = React.useState(false)
   const [canRedo, setCanRedo] = React.useState(false)
   const [projectName, setProjectName] = React.useState<string>("Untitled Project")
@@ -430,6 +431,63 @@ export const PaintbrushApp: React.FC = () => {
     mapRef.current?.fitToExtent(extent)
   }, [])
 
+  // Add shapefile features into a paint class
+  const handleAddFromShapefile = React.useCallback(async (classId: number) => {
+    const paintClass = classes.find(c => c.id === classId)
+    if (!paintClass) return
+    try {
+      setLoadingMessage("Selecting shapefile...")
+      setIsLoadingLayer(true)
+      const result = await window.electronAPI.openShapefile()
+      if (!result.success || (!result.shapefileData && !result.data)) {
+        if (result.error) console.log('Shapefile open failed:', result.error)
+        setIsLoadingLayer(false)
+        setLoadingMessage("")
+        return
+      }
+      setLoadingMessage(`Loading ${result.fileName || "shapefile"}...`)
+      let olFeatures: Awaited<ReturnType<typeof parseShapefileToOlFeaturesFromComponents>>
+      if (result.fileType === 'shapefile' && result.shapefileData) {
+        olFeatures = await parseShapefileToOlFeaturesFromComponents(
+          result.shapefileData,
+          result.fileName || 'shapefile'
+        )
+      } else if (result.fileType === 'shapefile-zip' && result.data) {
+        olFeatures = await parseShapefileToOlFeaturesFromZip(result.data)
+      } else {
+        setIsLoadingLayer(false)
+        setLoadingMessage("")
+        return
+      }
+      olFeatures.forEach(f => {
+        f.set("classId", classId)
+        f.set("strokeColor", paintClass.color)
+        const classOpacity = paintClass.opacity ?? 1
+        const effectiveOpacity = classOpacity * opacity
+        f.set("opacity", effectiveOpacity)
+      })
+      mapRef.current?.addPaintFeatures(olFeatures)
+      if (olFeatures.length > 0) {
+        const ext = olFeatures.reduce<[number, number, number, number] | null>((acc, f) => {
+          const g = f.getGeometry()
+          if (!g) return acc
+          const e = g.getExtent()
+          const tuple: [number, number, number, number] = [e[0], e[1], e[2], e[3]]
+          if (!acc) return tuple
+          return [Math.min(acc[0], e[0]), Math.min(acc[1], e[1]), Math.max(acc[2], e[2]), Math.max(acc[3], e[3])]
+        }, null)
+        if (ext) mapRef.current?.fitToExtent(ext)
+      }
+      setHasUnsavedChanges(true)
+    } catch (error) {
+      console.error('Add from shapefile failed:', error)
+      alert('Failed to add from shapefile: ' + (error as Error).message)
+    } finally {
+      setIsLoadingLayer(false)
+      setLoadingMessage("")
+    }
+  }, [classes, opacity])
+
   // Mark as having unsaved changes when classes change
   const handleClassesChange = React.useCallback((newClasses: PaintClass[] | ((prev: PaintClass[]) => PaintClass[])) => {
     setClasses(newClasses)
@@ -535,6 +593,7 @@ export const PaintbrushApp: React.FC = () => {
             paintStyle={paintStyle}
             selectedClass={selectedClass} 
             opacity={opacity} 
+            snapToBoundaryEnabled={snapToBoundaryEnabled}
             classes={classes}
             geoJsonData={geoJsonData}
             onUndoRedoStateChange={(undo, redo) => {
@@ -595,12 +654,15 @@ export const PaintbrushApp: React.FC = () => {
           setPaintStyle={setPaintStyle}
           opacity={opacity}
           setOpacity={setOpacity}
+          snapToBoundaryEnabled={snapToBoundaryEnabled}
+          setSnapToBoundaryEnabled={setSnapToBoundaryEnabled}
           isLoadingGeoJSON={isLoadingGeoJSON}
           layers={layers}
           onLayersChange={setLayers}
           onImportLayer={handleImportLayer}
           onZoomToLayer={handleZoomToLayer}
           onRemoveLayer={handleRemoveLayer}
+          onAddFromShapefile={handleAddFromShapefile}
         />
       </div>
 

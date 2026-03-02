@@ -2,6 +2,7 @@ export type PaintClass = {
   id: number
   name: string
   color: string
+  opacity?: number
 }
 
 export enum PaintStyle {

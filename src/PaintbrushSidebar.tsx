@@ -19,6 +19,8 @@ type PaintbrushSidebarProps = {
   setPaintStyle: React.Dispatch<React.SetStateAction<PaintStyle>>
   opacity: number
   setOpacity: React.Dispatch<React.SetStateAction<number>>
+  snapToBoundaryEnabled?: boolean
+  setSnapToBoundaryEnabled?: React.Dispatch<React.SetStateAction<boolean>>
   isLoadingGeoJSON?: boolean
   // Layer management props
   layers?: LayerInfo[]
@@ -26,6 +28,7 @@ type PaintbrushSidebarProps = {
   onImportLayer?: () => void
   onZoomToLayer?: (extent: [number, number, number, number]) => void
   onRemoveLayer?: (id: string) => void
+  onAddFromShapefile?: (classId: number) => void
 }
 
 export const PaintbrushSidebar: React.FC<PaintbrushSidebarProps> = ({
@@ -39,12 +42,15 @@ export const PaintbrushSidebar: React.FC<PaintbrushSidebarProps> = ({
   setPaintStyle,
   opacity,
   setOpacity,
+  snapToBoundaryEnabled = true,
+  setSnapToBoundaryEnabled,
   isLoadingGeoJSON = false,
   layers = [],
   onLayersChange,
   onImportLayer,
   onZoomToLayer,
-  onRemoveLayer
+  onRemoveLayer,
+  onAddFromShapefile
 }) => {
   const [activeTab, setActiveTab] = React.useState<SidebarTab>(SidebarTab.Paint)
   const [expandedClassId, setExpandedClassId] = React.useState<number | null>(null)
@@ -52,7 +58,7 @@ export const PaintbrushSidebar: React.FC<PaintbrushSidebarProps> = ({
   const handleAddClass = () => {
     const newClassIndex = classes.length + 1
     const distinctColor = getNextDistinctColor(classes)
-    const newClass: PaintClass = { id: Date.now(), name: `Class ${newClassIndex}`, color: distinctColor }
+    const newClass: PaintClass = { id: Date.now(), name: `Class ${newClassIndex}`, color: distinctColor, opacity: 1 }
     setClasses(prev => [...prev, newClass])
     setSelectedClassId(newClass.id)
     setExpandedClassId(newClass.id)
@@ -346,7 +352,7 @@ export const PaintbrushSidebar: React.FC<PaintbrushSidebarProps> = ({
                           }}>
                             Color
                           </label>
-                          <div style={{ display: "flex", gap: "8px" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                             <input
                               type="color"
                               value={paintClass.color}
@@ -357,8 +363,45 @@ export const PaintbrushSidebar: React.FC<PaintbrushSidebarProps> = ({
                               className="input"
                               value={paintClass.color}
                               onChange={e => handleUpdateClass(paintClass.id, { color: e.target.value })}
-                              style={{ fontSize: "13px", fontFamily: "Consolas, 'Courier New', monospace" }}
+                              style={{ flex: 1, minWidth: 0, fontSize: "13px", fontFamily: "Consolas, 'Courier New', monospace" }}
                             />
+                            <div style={{ display: "flex", alignItems: "center", gap: "4px", maxWidth: "80px" }}>
+                              <input
+                                type="range"
+                                min={0}
+                                max={1}
+                                step={0.01}
+                                value={paintClass.opacity ?? 1}
+                                onChange={e => handleUpdateClass(paintClass.id, { opacity: Number(e.target.value) })}
+                                style={{ flex: 1 }}
+                              />
+                              <span style={{ fontSize: "10px", color: "#8492a6", minWidth: "2.5em", textAlign: "right" }}>
+                                {Math.round((paintClass.opacity ?? 1) * 100)}%
+                              </span>
+                            </div>
+                            {onAddFromShapefile && (
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => onAddFromShapefile(paintClass.id)}
+                                title="Import polygons from a shapefile into this class"
+                                style={{
+                                  flexShrink: 0,
+                                  padding: "6px 10px",
+                                  fontSize: "11px",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: "4px"
+                                }}
+                              >
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                  <polyline points="17 8 12 3 7 8"/>
+                                  <line x1="12" y1="3" x2="12" y2="15"/>
+                                </svg>
+                                from file
+                              </button>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -427,6 +470,17 @@ export const PaintbrushSidebar: React.FC<PaintbrushSidebarProps> = ({
                 <option value={PaintStyle.Freehand}>Freehand (drag brush)</option>
               </select>
             </div>
+
+            {paintStyle === PaintStyle.Polygon && setSnapToBoundaryEnabled && (
+              <label style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px", cursor: "pointer", fontSize: "13px", color: "#1f2d3d" }}>
+                <input
+                  type="checkbox"
+                  checked={snapToBoundaryEnabled}
+                  onChange={(e) => setSnapToBoundaryEnabled(e.target.checked)}
+                />
+                Snap to boundary
+              </label>
+            )}
             
             <div style={{ display: "flex", gap: "8px", marginBottom: "16px" }}>
               <ToolButton 

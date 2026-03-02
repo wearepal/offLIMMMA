@@ -131,6 +131,47 @@ export async function loadShapefileFromComponents(
 }
 
 /**
+ * Parse a shapefile (from component files) to OpenLayers features in Web Mercator.
+ * Used when adding shapefile features into a paint class.
+ */
+export async function parseShapefileToOlFeaturesFromComponents(
+  shapefileData: ShapefileData,
+  fileName: string
+): Promise<Feature<Geometry>[]> {
+  const baseName = fileName.replace(/\.shp$/i, '')
+  const zip = new JSZip()
+  zip.file(`${baseName}.shp`, shapefileData.shp)
+  if (shapefileData.dbf) zip.file(`${baseName}.dbf`, shapefileData.dbf)
+  if (shapefileData.prj) zip.file(`${baseName}.prj`, shapefileData.prj)
+  if (shapefileData.shx) zip.file(`${baseName}.shx`, shapefileData.shx)
+  const zipBuffer = await zip.generateAsync({ type: 'arraybuffer' })
+  const geojson = await shp(zipBuffer)
+  const featureCollection = Array.isArray(geojson) ? geojson[0] : geojson
+  if (!featureCollection?.features?.length) throw new Error('No features found in shapefile')
+  const format = new GeoJSON()
+  return format.readFeatures(featureCollection, {
+    dataProjection: 'EPSG:4326',
+    featureProjection: 'EPSG:3857'
+  }) as Feature<Geometry>[]
+}
+
+/**
+ * Parse a shapefile from a ZIP to OpenLayers features in Web Mercator.
+ */
+export async function parseShapefileToOlFeaturesFromZip(
+  arrayBuffer: ArrayBuffer
+): Promise<Feature<Geometry>[]> {
+  const geojson = await shp(arrayBuffer)
+  const featureCollection = Array.isArray(geojson) ? geojson[0] : geojson
+  if (!featureCollection?.features?.length) throw new Error('No features found in shapefile')
+  const format = new GeoJSON()
+  return format.readFeatures(featureCollection, {
+    dataProjection: 'EPSG:4326',
+    featureProjection: 'EPSG:3857'
+  }) as Feature<Geometry>[]
+}
+
+/**
  * Load a Shapefile from a ZIP file
  */
 export async function loadShapefileFromZip(

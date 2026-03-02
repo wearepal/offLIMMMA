@@ -50,6 +50,7 @@ type PaintbrushMapProps = {
   paintStyle: PaintStyle
   selectedClass: PaintClass | null
   opacity: number
+  snapToBoundaryEnabled?: boolean
   classes: PaintClass[]
   onUndoRedoStateChange?: (canUndo: boolean, canRedo: boolean) => void
   geoJsonData?: string | null
@@ -72,10 +73,11 @@ export type PaintbrushMapRef = {
   getBounds: () => BoundingBox | null
   refreshTiles: () => void
   fitToExtent: (extent: [number, number, number, number]) => void
+  addPaintFeatures: (features: Feature<Geometry>[]) => void
 }
 
 export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapProps>(
-  ({ activeTool, paintStyle, selectedClass, opacity, classes, onUndoRedoStateChange, geoJsonData, onClassesRestored, onLoadingChange, onDataChange, geotiffLayers, vectorLayers, layers, onCachedTileUsed }, ref) => {
+  ({ activeTool, paintStyle, selectedClass, opacity, snapToBoundaryEnabled = true, classes, onUndoRedoStateChange, geoJsonData, onClassesRestored, onLoadingChange, onDataChange, geotiffLayers, vectorLayers, layers, onCachedTileUsed }, ref) => {
   const mapRef = React.useRef<HTMLDivElement>(null)
   const [map, setMap] = React.useState<Map | null>(null)
   const vectorSourceRef = React.useRef<VectorSource | null>(null)
@@ -260,6 +262,7 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
       id: paintClass.id,
       name: paintClass.name,
       color: paintClass.color,
+      opacity: paintClass.opacity ?? 1,
       order: index
     }))
     
@@ -315,6 +318,15 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
     map.getView().fit(extent, { padding: [50, 50, 50, 50], maxZoom: 18 })
   }, [map])
 
+  // Add paint features (e.g. from shapefile import into a class)
+  const addPaintFeatures = React.useCallback((features: Feature<Geometry>[]) => {
+    const source = vectorSourceRef.current
+    if (!source) return
+    features.forEach(f => source.addFeature(f))
+    saveState()
+    onDataChange?.()
+  }, [saveState, onDataChange])
+
   React.useImperativeHandle(ref, () => ({
     undo,
     redo,
@@ -324,8 +336,9 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
     clearAll,
     getBounds,
     refreshTiles,
-    fitToExtent
-  }), [undo, redo, exportGeoJSON, clearAll, getBounds, refreshTiles, fitToExtent])
+    fitToExtent,
+    addPaintFeatures
+  }), [undo, redo, exportGeoJSON, clearAll, getBounds, refreshTiles, fitToExtent, addPaintFeatures])
   
   // Keyboard shortcuts for undo/redo
   React.useEffect(() => {
@@ -353,11 +366,13 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
   const handleMergePolygons = (newPolygon: Polygon, classId: number): Feature[] => {
     if (!vectorSourceRef.current) return []
     
+    const classOpacity = selectedClass?.opacity ?? 1
+    const effectiveOpacity = classOpacity * opacity
     return mergeOverlappingPolygons(newPolygon, classId, {
       vectorSource: vectorSourceRef.current,
       geoJsonFormat: geoJsonFormat.current,
       selectedClass,
-      opacity
+      opacity: effectiveOpacity
     })
   }
   
@@ -646,10 +661,11 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
         if (geoJsonParsed.metadata?.classes && onClassesRestoredRef.current) {
           const restoredClasses: PaintClass[] = geoJsonParsed.metadata.classes
             .sort((a: { order: number }, b: { order: number }) => a.order - b.order)
-            .map((c: { id: number; name?: string; color?: string }) => ({
+            .map((c: { id: number; name?: string; color?: string; opacity?: number }) => ({
               id: Number(c.id),
               name: String(c.name || 'Unnamed Class'),
-              color: String(c.color || '#ff7f50')
+              color: String(c.color || '#ff7f50'),
+              opacity: c.opacity !== undefined ? Number(c.opacity) : 1
             }))
           
           if (restoredClasses.length > 0) {
@@ -747,13 +763,17 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
     }
   }, [map, classes, saveState])
 
-  // Update opacity
+  // Update feature opacity from per-class opacity * global opacity
   React.useEffect(() => {
     if (!map || !vectorSourceRef.current) return
     
     const features = vectorSourceRef.current.getFeatures()
     features.forEach(feature => {
-      feature.set("opacity", opacity)
+      const classId = feature.get("classId")
+      const paintClass = classId != null ? classes.find(c => c.id === classId) : null
+      const classOpacity = paintClass?.opacity ?? 1
+      const featureOpacity = classOpacity * opacity
+      feature.set("opacity", featureOpacity)
       feature.changed()
     })
     
@@ -762,7 +782,7 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
     if (vectorLayerRef.current) {
       vectorLayerRef.current.changed()
     }
-  }, [map, opacity])
+  }, [map, classes, opacity])
 
   // Manage GeoTIFF layers
   const geotiffLayerRefsMap = React.useRef<globalThis.Map<string, ImageLayer<any>>>(new globalThis.Map())
@@ -1000,77 +1020,76 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
 
       let polygon = new Polygon([closedCoords])
 
-      // Make boundaries flush (no overlap, no gap) across zoom levels:
-      // do boolean ops with a fixed precision model (EPSG:3857 units) instead of a zoom-based buffer.
-      try {
-        const jsts = (window as any).jsts
-        if (jsts?.io?.GeoJSONReader && jsts?.io?.GeoJSONWriter) {
-          const jstsReader = new jsts.io.GeoJSONReader()
-          const jstsWriter = new jsts.io.GeoJSONWriter()
+      // When "Snap to boundary" is on: make boundaries flush (no overlap) by subtracting other-class polygons.
+      // When off: keep the polygon as drawn, no trimming.
+      if (snapToBoundaryEnabled) {
+        try {
+          const jsts = (window as any).jsts
+          if (jsts?.io?.GeoJSONReader && jsts?.io?.GeoJSONWriter) {
+            const jstsReader = new jsts.io.GeoJSONReader()
+            const jstsWriter = new jsts.io.GeoJSONWriter()
 
-          // Use a fixed precision grid in meters (Web Mercator units).
-          // 1e6 => 1 micrometer grid; effectively "flush" for mapping purposes.
-          const precisionScale = 1e6
-          const reducer =
-            jsts?.precision?.GeometryPrecisionReducer && jsts?.geom?.PrecisionModel
-              ? new jsts.precision.GeometryPrecisionReducer(new jsts.geom.PrecisionModel(precisionScale))
-              : null
-          if (reducer) {
-            reducer.setChangePrecisionModel(true)
-            reducer.setRemoveCollapsedComponents(true)
-          }
-
-          const newPolyGeo = geoJsonFormat.current.writeGeometryObject(polygon)
-          let newJstsGeom = jstsReader.read(newPolyGeo)
-          try { newJstsGeom = newJstsGeom.buffer(0) } catch {}
-          if (reducer) {
-            try { newJstsGeom = reducer.reduce(newJstsGeom) } catch {}
-          }
-
-          // subtract every other-class polygon that intersects/touches
-          const others = source.getFeatures().filter(f => {
-            if (f.get(TRANSIENT_KEY)) return false
-            const classId = f.get("classId")
-            if (classId == null || classId === selectedClass.id) return false
-            const g = f.getGeometry()
-            return g instanceof Polygon
-          })
-
-          for (const f of others) {
-            const g = f.getGeometry() as Polygon
-            const otherGeo = geoJsonFormat.current.writeGeometryObject(g)
-            let otherJsts = jstsReader.read(otherGeo)
-            try { otherJsts = otherJsts.buffer(0) } catch {}
+            const precisionScale = 1e6
+            const reducer =
+              jsts?.precision?.GeometryPrecisionReducer && jsts?.geom?.PrecisionModel
+                ? new jsts.precision.GeometryPrecisionReducer(new jsts.geom.PrecisionModel(precisionScale))
+                : null
             if (reducer) {
-              try { otherJsts = reducer.reduce(otherJsts) } catch {}
+              reducer.setChangePrecisionModel(true)
+              reducer.setRemoveCollapsedComponents(true)
             }
 
-            // only subtract if nearby/intersecting
-            if (newJstsGeom.intersects(otherJsts) || newJstsGeom.touches(otherJsts)) {
-              try {
-                const diff = newJstsGeom.difference(otherJsts)
-                newJstsGeom = diff
-                try { newJstsGeom = newJstsGeom.buffer(0) } catch {}
-                if (reducer) {
-                  try { newJstsGeom = reducer.reduce(newJstsGeom) } catch {}
+            const newPolyGeo = geoJsonFormat.current.writeGeometryObject(polygon)
+            let newJstsGeom = jstsReader.read(newPolyGeo)
+            try { newJstsGeom = newJstsGeom.buffer(0) } catch {}
+            if (reducer) {
+              try { newJstsGeom = reducer.reduce(newJstsGeom) } catch {}
+            }
+
+            // subtract every other-class polygon that intersects/touches
+            const others = source.getFeatures().filter(f => {
+              if (f.get(TRANSIENT_KEY)) return false
+              const classId = f.get("classId")
+              if (classId == null || classId === selectedClass.id) return false
+              const g = f.getGeometry()
+              return g instanceof Polygon
+            })
+
+            for (const f of others) {
+              const g = f.getGeometry() as Polygon
+              const otherGeo = geoJsonFormat.current.writeGeometryObject(g)
+              let otherJsts = jstsReader.read(otherGeo)
+              try { otherJsts = otherJsts.buffer(0) } catch {}
+              if (reducer) {
+                try { otherJsts = reducer.reduce(otherJsts) } catch {}
+              }
+
+              if (newJstsGeom.intersects(otherJsts) || newJstsGeom.touches(otherJsts)) {
+                try {
+                  const diff = newJstsGeom.difference(otherJsts)
+                  newJstsGeom = diff
+                  try { newJstsGeom = newJstsGeom.buffer(0) } catch {}
+                  if (reducer) {
+                    try { newJstsGeom = reducer.reduce(newJstsGeom) } catch {}
+                  }
+                } catch {
+                  // ignore failures, keep current geometry
                 }
-              } catch {
-                // ignore failures, keep current geometry
               }
             }
-          }
 
-          const trimmedGeo = jstsWriter.write(newJstsGeom)
-          const trimmedOl = geoJsonFormat.current.readGeometry(trimmedGeo, {
-            dataProjection: 'EPSG:3857',
-            featureProjection: 'EPSG:3857'
-          }) as Polygon
-          if (trimmedOl) {
-            polygon = trimmedOl
+            const trimmedGeo = jstsWriter.write(newJstsGeom)
+            const trimmedOl = geoJsonFormat.current.readGeometry(trimmedGeo, {
+              dataProjection: 'EPSG:3857',
+              featureProjection: 'EPSG:3857'
+            }) as Polygon
+            if (trimmedOl) {
+              polygon = trimmedOl
+            }
           }
+        } catch (e) {
+          // If JSTS isn't available or something fails, just keep the original polygon.
         }
-      } catch (e) {
-        // If JSTS isn't available or something fails, just keep the original polygon.
       }
 
       // Remove preview feature if present
@@ -1084,8 +1103,10 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
         mergedFeatures.forEach(f => source.addFeature(f))
       } else {
         const feature = new Feature({ geometry: polygon })
+        const classOpacity = selectedClass.opacity ?? 1
+        const effectiveOpacity = classOpacity * opacity
         feature.set("strokeColor", selectedClass.color)
-        feature.set("opacity", opacity)
+        feature.set("opacity", effectiveOpacity)
         feature.set("classId", selectedClass.id)
         source.addFeature(feature)
       }
@@ -1112,8 +1133,10 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
 
         if (!polygonPreviewFeatureRef.current) {
           const feature = new Feature({ geometry })
+          const classOpacity = selectedClass.opacity ?? 1
+          const effectiveOpacity = classOpacity * opacity
           feature.set("strokeColor", selectedClass.color)
-          feature.set("opacity", opacity)
+          feature.set("opacity", effectiveOpacity)
           feature.set("classId", selectedClass.id)
           polygonPreviewFeatureRef.current = feature
           source.addFeature(feature)
@@ -1135,6 +1158,10 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
       }
 
       const snapToBoundary = (coordinate: number[]): number[] => {
+        if (!snapToBoundaryEnabled) {
+          setSnapIndicator(null)
+          return coordinate
+        }
         if (!selectedClass || !vectorSourceRef.current) return coordinate
         
         const resolution = map.getView().getResolution() || 1
@@ -1341,8 +1368,10 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
         const feature = new Feature({
           geometry: lineString
         })
+        const classOpacity = selectedClass.opacity ?? 1
+        const effectiveOpacity = classOpacity * opacity
         feature.set("strokeColor", selectedClass.color)
-        feature.set("opacity", opacity)
+        feature.set("opacity", effectiveOpacity)
         feature.set("classId", selectedClass.id)
         currentStrokeFeatureRef.current = feature
         vectorSourceRef.current.addFeature(feature)
@@ -1438,7 +1467,7 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
       unByKey(pointerDragKey)
       unByKey(pointerUpKey)
     }
-  }, [map, activeTool, paintStyle, selectedClass, opacity, saveState])
+  }, [map, activeTool, paintStyle, selectedClass, opacity, snapToBoundaryEnabled, saveState])
 
   // Erase functionality
   React.useEffect(() => {
