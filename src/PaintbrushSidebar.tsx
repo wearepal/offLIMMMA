@@ -29,6 +29,11 @@ type PaintbrushSidebarProps = {
   onZoomToLayer?: (extent: [number, number, number, number]) => void
   onRemoveLayer?: (id: string) => void
   onAddFromShapefile?: (classId: number) => void
+  onAddClassFromFile?: () => void
+  importFileResult?: { fileName: string; tableRows: Record<string, unknown>[] } | null
+  onOpenVectorForImport?: () => void
+  onImportWithAssignments?: (assignments: (number | null)[]) => void
+  onCloseImportModal?: () => void
 }
 
 export const PaintbrushSidebar: React.FC<PaintbrushSidebarProps> = ({
@@ -50,10 +55,33 @@ export const PaintbrushSidebar: React.FC<PaintbrushSidebarProps> = ({
   onImportLayer,
   onZoomToLayer,
   onRemoveLayer,
-  onAddFromShapefile
+  onAddFromShapefile,
+  onAddClassFromFile,
+  importFileResult = null,
+  onOpenVectorForImport,
+  onImportWithAssignments,
+  onCloseImportModal
 }) => {
   const [activeTab, setActiveTab] = React.useState<SidebarTab>(SidebarTab.Paint)
   const [expandedClassId, setExpandedClassId] = React.useState<number | null>(null)
+  // Per-row class assignment for import modal (index -> classId or null for None)
+  const [rowClassAssignments, setRowClassAssignments] = React.useState<(number | null)[]>([])
+  const [filterField, setFilterField] = React.useState<string>("")
+  const [filterText, setFilterText] = React.useState<string>("")
+  const [bulkClassId, setBulkClassId] = React.useState<number | null>(null)
+  const bulkClass = React.useMemo(
+    () => (bulkClassId != null ? classes.find(c => c.id === bulkClassId) ?? null : null),
+    [classes, bulkClassId]
+  )
+  React.useEffect(() => {
+    if (importFileResult?.tableRows?.length) {
+      setRowClassAssignments(importFileResult.tableRows.map(() => null))
+    } else {
+      setRowClassAssignments([])
+    }
+    setFilterField("")
+    setFilterText("")
+  }, [importFileResult])
   
   const handleAddClass = () => {
     const newClassIndex = classes.length + 1
@@ -186,18 +214,34 @@ export const PaintbrushSidebar: React.FC<PaintbrushSidebarProps> = ({
               }}>
                 Classes
               </span>
-              <button 
-                className="btn btn-primary btn-sm"
-                onClick={handleAddClass}
-                disabled={isLoadingGeoJSON}
-                title={isLoadingGeoJSON ? "Loading saved data..." : "Add a new class"}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <line x1="12" y1="5" x2="12" y2="19"/>
-                  <line x1="5" y1="12" x2="19" y2="12"/>
-                </svg>
-                Add Class
-              </button>
+              <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                {onOpenVectorForImport && (
+                  <button 
+                    className="btn btn-secondary btn-sm btn-icon"
+                    onClick={() => onOpenVectorForImport()}
+                    disabled={isLoadingGeoJSON}
+                    title="Import from file"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                      <polyline points="17 8 12 3 7 8"/>
+                      <line x1="12" y1="3" x2="12" y2="15"/>
+                    </svg>
+                  </button>
+                )}
+                <button 
+                  className="btn btn-primary btn-sm"
+                  onClick={handleAddClass}
+                  disabled={isLoadingGeoJSON}
+                  title={isLoadingGeoJSON ? "Loading saved data..." : "Add a new class"}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <line x1="12" y1="5" x2="12" y2="19"/>
+                    <line x1="5" y1="12" x2="19" y2="12"/>
+                  </svg>
+                  Add Class
+                </button>
+              </div>
             </div>
 
             {isLoadingGeoJSON && (
@@ -819,6 +863,241 @@ export const PaintbrushSidebar: React.FC<PaintbrushSidebarProps> = ({
             <p>
               Your annotations always appear above all layers.
             </p>
+          </div>
+        </div>
+      )}
+
+      {/* From File modal: shown after file is loaded, table with per-row class dropdown */}
+      {importFileResult && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0, 0, 0, 0.4)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 10000
+          }}
+          onClick={() => onCloseImportModal?.()}
+        >
+          <div
+            style={{
+              background: "#ffffff",
+              borderRadius: "12px",
+              padding: "20px 24px",
+              boxShadow: "0 8px 32px rgba(0,0,0,0.15)",
+              minWidth: "360px",
+              maxWidth: "90vw",
+              maxHeight: "85vh",
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden"
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div style={{ 
+              fontSize: "13px", 
+              fontWeight: 600, 
+              color: "#1f2d3d",
+              marginBottom: "8px",
+              flexShrink: 0
+            }}>
+              Polygons from {importFileResult.fileName}
+            </div>
+            {/* Filter by field */}
+            <div style={{ 
+              display: "flex", 
+              gap: "8px", 
+              alignItems: "center", 
+              marginBottom: "8px",
+              flexShrink: 0
+            }}>
+              <span style={{ fontSize: "11px", fontWeight: 600, color: "#8492a6", whiteSpace: "nowrap" }}>Filter</span>
+              <select
+                className="input"
+                style={{ fontSize: "12px", padding: "4px 6px", width: "140px", flexShrink: 0, flexGrow: 0 }}
+                value={filterField}
+                onChange={e => setFilterField(e.target.value)}
+              >
+                <option value="">All fields</option>
+                {(Object.keys(importFileResult.tableRows[0] || {}) as string[])
+                  .filter(key => key !== "__index")
+                  .map(key => (
+                    <option key={key} value={key}>{key}</option>
+                  ))}
+              </select>
+              <input
+                className="input"
+                placeholder={filterField ? "Contains..." : "Search..."}
+                style={{ fontSize: "12px", padding: "4px 8px", flex: 1, minWidth: 0 }}
+                value={filterText}
+                onChange={e => setFilterText(e.target.value)}
+              />
+            </div>
+            {/* Bulk assign class to all (filtered) rows */}
+            <div style={{ 
+              display: "flex", 
+              gap: "8px", 
+              alignItems: "center", 
+              marginBottom: "8px",
+              flexShrink: 0
+            }}>
+              <span style={{ fontSize: "11px", fontWeight: 600, color: "#8492a6", whiteSpace: "nowrap" }}>Set class</span>
+              <select
+                className="input"
+                style={{ 
+                  fontSize: "12px", 
+                  padding: "4px 6px", 
+                  width: "160px", 
+                  flexShrink: 0, 
+                  flexGrow: 0,
+                  backgroundColor: bulkClass ? `${bulkClass.color}33` : undefined,
+                  borderColor: bulkClass ? bulkClass.color : undefined
+                }}
+                value={bulkClassId != null ? String(bulkClassId) : ""}
+                onChange={e => {
+                  const v = e.target.value
+                  setBulkClassId(v === "" ? null : Number(v))
+                }}
+              >
+                <option value="">Select class...</option>
+                {classes.map(c => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+              <button
+                className="btn btn-secondary btn-sm"
+                style={{ whiteSpace: "nowrap" }}
+                disabled={bulkClassId == null || !rowClassAssignments.length}
+                onClick={() => {
+                  if (bulkClassId == null || !importFileResult) return
+                  const allKeys = Object.keys(importFileResult.tableRows[0] || {}) as string[]
+                  const indexedRows = importFileResult.tableRows.map((row, i) => ({ row, index: i }))
+                  const lowered = filterText.trim().toLowerCase()
+                  const visibleRows = lowered
+                    ? indexedRows.filter(({ row }) => {
+                        if (filterField) {
+                          const v = (row as any)[filterField]
+                          return v != null && String(v).toLowerCase().includes(lowered)
+                        }
+                        return allKeys
+                          .filter(k => k !== "__index")
+                          .some(k => {
+                            const v = (row as any)[k]
+                            return v != null && String(v).toLowerCase().includes(lowered)
+                          })
+                      })
+                    : indexedRows
+                  const visibleIndexes = new Set(visibleRows.map(v => v.index))
+                  setRowClassAssignments(prev => prev.map((val, idx) => (
+                    visibleIndexes.has(idx) ? bulkClassId : val
+                  )))
+                }}
+              >
+                Set as class
+              </button>
+            </div>
+            {(() => {
+              const allKeys = Object.keys(importFileResult.tableRows[0] || {}) as string[]
+              const indexedRows = importFileResult.tableRows.map((row, i) => ({ row, index: i }))
+              const lowered = filterText.trim().toLowerCase()
+              const visibleRows = lowered
+                ? indexedRows.filter(({ row }) => {
+                    if (filterField) {
+                      const v = (row as any)[filterField]
+                      return v != null && String(v).toLowerCase().includes(lowered)
+                    }
+                    // search all non-internal fields
+                    return allKeys
+                      .filter(k => k !== "__index")
+                      .some(k => {
+                        const v = (row as any)[k]
+                        return v != null && String(v).toLowerCase().includes(lowered)
+                      })
+                  })
+                : indexedRows
+              return (
+                <div style={{ flex: 1, minHeight: 0, overflow: "auto", marginBottom: "12px", border: "1px solid #e8ecf4", borderRadius: "8px" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+                    <thead>
+                      <tr style={{ background: "#f1f3f9", borderBottom: "1px solid #e8ecf4" }}>
+                        {allKeys.map(key => (
+                          <th key={key} style={{ padding: "8px 10px", textAlign: "left", fontWeight: 600, color: "#4d5c7b" }}>
+                            {key === "__index" ? "#" : key === "__area" ? "Area (m²)" : key}
+                          </th>
+                        ))}
+                        <th style={{ padding: "8px 10px", textAlign: "left", fontWeight: 600, color: "#4d5c7b" }}>Class</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {visibleRows.map(({ row, index }) => {
+                        const assignedClassId = rowClassAssignments[index]
+                        const assignedClass = assignedClassId != null ? classes.find(c => c.id === assignedClassId) : undefined
+                        const rowBg = assignedClass ? `${assignedClass.color}33` : "transparent"
+                        return (
+                          <tr
+                            key={index}
+                            style={{
+                              borderBottom: "1px solid #f3f4f6",
+                              background: rowBg,
+                              transition: "background 0.12s ease"
+                            }}
+                          >
+                            {allKeys.map(key => (
+                              <td key={key} style={{ padding: "6px 10px", color: "#1f2d3d" }}>
+                              {key === "__area" && row[key] != null
+                                ? typeof row[key] === "number"
+                                  ? (row[key] as number) >= 1e6
+                                    ? ((row[key] as number) / 1e6).toFixed(2) + " km²"
+                                    : (row[key] as number).toFixed(0) + " m²"
+                                  : String(row[key])
+                                : String(row[key] ?? "")}
+                              </td>
+                            ))}
+                            <td style={{ padding: "4px 8px" }}>
+                              <select
+                                className="input"
+                                style={{ fontSize: "12px", padding: "4px 8px", minWidth: "100px" }}
+                                value={rowClassAssignments[index] != null ? String(rowClassAssignments[index]) : ""}
+                                onChange={e => {
+                                  const v = e.target.value
+                                  setRowClassAssignments(prev => {
+                                    const next = [...prev]
+                                    next[index] = v === "" ? null : Number(v)
+                                    return next
+                                  })
+                                }}
+                              >
+                                <option value="">None</option>
+                                {classes.map(c => (
+                                  <option key={c.id} value={c.id}>{c.name}</option>
+                                ))}
+                              </select>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            })()}
+            <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => {
+                  onImportWithAssignments?.(rowClassAssignments)
+                  onCloseImportModal?.()
+                }}
+                style={{ flex: 1 }}
+              >
+                Import selected
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={() => onCloseImportModal?.()}>
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
       )}

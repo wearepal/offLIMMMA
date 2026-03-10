@@ -1,10 +1,13 @@
 import * as React from "react"
 import { PaintbrushMap, PaintbrushMapRef, BoundingBox } from "./PaintbrushMap"
 import { GeoTIFFLayer, loadGeoTIFF } from "./utils/geotiff_utils"
-import { VectorFileLayer, loadShapefileFromComponents, loadShapefileFromZip, loadGeoJSONFile, loadKMLFile, parseShapefileToOlFeaturesFromComponents, parseShapefileToOlFeaturesFromZip } from "./utils/vector_utils"
+import { VectorFileLayer, loadShapefileFromComponents, loadShapefileFromZip, loadGeoJSONFile, loadKMLFile, parseShapefileToOlFeaturesFromComponents, parseShapefileToOlFeaturesFromZip, parseGeoJSONFeaturesToOlFeatures, buildTableRowsFromFeatures } from "./utils/vector_utils"
+import type Feature from "ol/Feature"
+import type Geometry from "ol/geom/Geometry"
 import { PaintbrushToolbar } from "./PaintbrushToolbar"
 import { PaintbrushSidebar } from "./PaintbrushSidebar"
 import { PaintClass, PaintStyle, ToolMode } from "./utils/types"
+import { getNextDistinctColor } from "./utils/utils"
 import { OfflineDownloader, hasOfflineTiles } from "./OfflineDownloader"
 import { LayerInfo } from "./LayersPanel"
 
@@ -39,6 +42,13 @@ export const PaintbrushApp: React.FC = () => {
   const [layers, setLayers] = React.useState<LayerInfo[]>([
     { id: "osm", name: "OpenStreetMap", type: "osm", opacity: 1, visible: true }
   ])
+
+  // From-file import: selected file parsed to features and table rows for modal
+  const [importFileResult, setImportFileResult] = React.useState<{
+    fileName: string
+    tableRows: Record<string, unknown>[]
+    olFeatures: Feature<Geometry>[]
+  } | null>(null)
 
   // Expose unsaved changes state to window for Electron and send to main process
   React.useEffect(() => {
@@ -432,8 +442,8 @@ export const PaintbrushApp: React.FC = () => {
   }, [])
 
   // Add shapefile features into a paint class
-  const handleAddFromShapefile = React.useCallback(async (classId: number) => {
-    const paintClass = classes.find(c => c.id === classId)
+  const handleAddFromShapefile = React.useCallback(async (classId: number, paintClassOverride?: PaintClass) => {
+    const paintClass = paintClassOverride ?? classes.find(c => c.id === classId)
     if (!paintClass) return
     try {
       setLoadingMessage("Selecting shapefile...")
@@ -487,6 +497,112 @@ export const PaintbrushApp: React.FC = () => {
       setLoadingMessage("")
     }
   }, [classes, opacity])
+
+  // Add a new class and import polygons from a shapefile into it
+  const handleAddClassFromFile = React.useCallback(async () => {
+    const newClassIndex = classes.length + 1
+    const distinctColor = getNextDistinctColor(classes)
+    const newClass: PaintClass = { id: Date.now(), name: `Class ${newClassIndex}`, color: distinctColor, opacity: 1 }
+    setClasses(prev => [...prev, newClass])
+    setSelectedClassId(newClass.id)
+    await handleAddFromShapefile(newClass.id, newClass)
+  }, [classes, handleAddFromShapefile])
+
+  // Open vector file (GeoPackage or shapefile) for import and show polygon table in modal
+  const handleOpenVectorForImport = React.useCallback(async () => {
+    try {
+      setLoadingMessage("Selecting file...")
+      setIsLoadingLayer(true)
+      const result = await window.electronAPI.openVectorForImport()
+      if (!result.success || result.canceled) {
+        setIsLoadingLayer(false)
+        setLoadingMessage("")
+        return
+      }
+      if (result.error) {
+        alert(result.error)
+        setIsLoadingLayer(false)
+        setLoadingMessage("")
+        return
+      }
+      setLoadingMessage(`Loading ${result.fileName || "file"}...`)
+      let olFeatures: Feature<Geometry>[]
+      if (result.fileType === "geopackage" && result.geoJsonFeatures?.length) {
+        olFeatures = parseGeoJSONFeaturesToOlFeatures(result.geoJsonFeatures)
+      } else if (result.fileType === "shapefile" && result.shapefileData) {
+        olFeatures = await parseShapefileToOlFeaturesFromComponents(
+          result.shapefileData,
+          result.fileName || "shapefile"
+        )
+      } else if (result.fileType === "shapefile-zip" && result.data) {
+        olFeatures = await parseShapefileToOlFeaturesFromZip(result.data)
+      } else {
+        setLoadingMessage("")
+        setIsLoadingLayer(false)
+        return
+      }
+      if (!olFeatures.length) {
+        alert("No polygon features found in the file.")
+        setLoadingMessage("")
+        setIsLoadingLayer(false)
+        return
+      }
+      const tableRows = buildTableRowsFromFeatures(olFeatures)
+      setImportFileResult({ fileName: result.fileName || "file", tableRows, olFeatures })
+    } catch (error) {
+      console.error("Import file failed:", error)
+      alert("Failed to load file: " + (error as Error).message)
+    } finally {
+      setIsLoadingLayer(false)
+      setLoadingMessage("")
+    }
+  }, [])
+
+  // Add pre-loaded features to a paint class (used after user picks class in import modal)
+  const addFeaturesToClass = React.useCallback((classId: number, features: Feature<Geometry>[], paintClassOverride?: PaintClass) => {
+    const paintClass = paintClassOverride ?? classes.find(c => c.id === classId)
+    if (!paintClass) return
+    features.forEach(f => {
+      f.set("classId", classId)
+      f.set("strokeColor", paintClass.color)
+      const classOpacity = paintClass.opacity ?? 1
+      const effectiveOpacity = classOpacity * opacity
+      f.set("opacity", effectiveOpacity)
+    })
+    mapRef.current?.addPaintFeatures(features)
+    if (features.length > 0) {
+      const ext = features.reduce<[number, number, number, number] | null>((acc, f) => {
+        const g = f.getGeometry()
+        if (!g) return acc
+        const e = g.getExtent()
+        const tuple: [number, number, number, number] = [e[0], e[1], e[2], e[3]]
+        if (!acc) return tuple
+        return [Math.min(acc[0], e[0]), Math.min(acc[1], e[1]), Math.max(acc[2], e[2]), Math.max(acc[3], e[3])]
+      }, null)
+      if (ext) mapRef.current?.fitToExtent(ext)
+    }
+    setHasUnsavedChanges(true)
+  }, [classes, opacity])
+
+  const handleImportWithAssignments = React.useCallback((assignments: (number | null)[]) => {
+    if (!importFileResult) return
+    const byClass = new Map<number, Feature<Geometry>[]>()
+    assignments.forEach((classId, i) => {
+      if (classId == null) return
+      const feature = importFileResult.olFeatures[i]
+      if (!feature) return
+      if (!byClass.has(classId)) byClass.set(classId, [])
+      byClass.get(classId)!.push(feature)
+    })
+    byClass.forEach((features, classId) => {
+      addFeaturesToClass(classId, features)
+    })
+    setImportFileResult(null)
+  }, [importFileResult, addFeaturesToClass])
+
+  const handleCloseImportModal = React.useCallback(() => {
+    setImportFileResult(null)
+  }, [])
 
   // Mark as having unsaved changes when classes change
   const handleClassesChange = React.useCallback((newClasses: PaintClass[] | ((prev: PaintClass[]) => PaintClass[])) => {
@@ -663,6 +779,11 @@ export const PaintbrushApp: React.FC = () => {
           onZoomToLayer={handleZoomToLayer}
           onRemoveLayer={handleRemoveLayer}
           onAddFromShapefile={handleAddFromShapefile}
+          onAddClassFromFile={handleAddClassFromFile}
+          importFileResult={importFileResult}
+          onOpenVectorForImport={handleOpenVectorForImport}
+          onImportWithAssignments={handleImportWithAssignments}
+          onCloseImportModal={handleCloseImportModal}
         />
       </div>
 

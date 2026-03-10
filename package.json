@@ -7,6 +7,8 @@
     "start": "npm run build && electron .",
     "dev": "concurrently \"npm run watch\" \"wait-on dist/renderer.js && electron .\"",
     "build": "webpack --mode production",
+    "rebuild": "electron-rebuild -f -w better-sqlite3",
+    "postinstall": "electron-rebuild -f -w better-sqlite3",
     "watch": "webpack --mode development --watch",
     "package": "npm run build && electron-builder",
     "package:win": "npm run build && electron-builder --win",
@@ -64,6 +66,7 @@
     "@types/react-dom": "^18.2.18",
     "concurrently": "^8.2.2",
     "css-loader": "^6.8.1",
+    "@electron/rebuild": "^3.6.0",
     "electron": "^28.0.0",
     "electron-builder": "^24.9.1",
     "html-webpack-plugin": "^5.6.0",
@@ -75,6 +78,8 @@
     "webpack-cli": "^5.1.4"
   },
   "dependencies": {
+    "@ngageoint/geopackage": "^4.2.6",
+    "better-sqlite3": "^11.6.0",
     "buffer": "^6.0.3",
     "distinct-colors": "^3.0.0",
     "geotiff": "^2.1.3",

@@ -12,6 +12,7 @@ import Feature from "ol/Feature"
 import LineString from "ol/geom/LineString"
 import Point from "ol/geom/Point"
 import Polygon from "ol/geom/Polygon"
+import MultiPolygon from "ol/geom/MultiPolygon"
 import DragPan from "ol/interaction/DragPan"
 import MapBrowserEvent from "ol/MapBrowserEvent"
 import { unByKey } from "ol/Observable"
@@ -443,7 +444,7 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
         const featureOpacity = feature.get("opacity") ?? opacity
         
         const opacityKey = Math.round(featureOpacity * 100) / 100
-        const isPolygon = geometry instanceof Polygon
+        const isPolygon = geometry instanceof Polygon || geometry instanceof MultiPolygon
         const cacheKey = `${color}-${opacityKey}-${isPolygon ? 'poly' : 'line'}`
         
         if (!styleCacheRef.current[cacheKey]) {

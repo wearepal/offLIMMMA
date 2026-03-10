@@ -331,3 +331,36 @@ export async function loadKMLFile(
     featureCount: olFeatures.length
   }
 }
+
+/**
+ * Parse an array of GeoJSON features (e.g. from GeoPackage) to OpenLayers features in Web Mercator.
+ */
+export function parseGeoJSONFeaturesToOlFeatures(geoJsonFeatures: Array<{ type?: string; geometry: unknown; properties?: Record<string, unknown> }>): Feature<Geometry>[] {
+  if (!geoJsonFeatures || geoJsonFeatures.length === 0) return []
+  const featureCollection = { type: 'FeatureCollection' as const, features: geoJsonFeatures }
+  const format = new GeoJSON()
+  return format.readFeatures(featureCollection, {
+    dataProjection: 'EPSG:4326',
+    featureProjection: 'EPSG:3857'
+  }) as Feature<Geometry>[]
+}
+
+/**
+ * Build table rows from OL features for display: index, area (m²), and attribute properties.
+ */
+export function buildTableRowsFromFeatures(olFeatures: Feature<Geometry>[]): Record<string, unknown>[] {
+  return olFeatures.map((f, i) => {
+    const props = f.getProperties()
+    const geom = f.getGeometry()
+    let area: number | null = null
+    if (geom && typeof (geom as any).getArea === 'function') {
+      area = (geom as any).getArea()
+    }
+    const row: Record<string, unknown> = { __index: i + 1, __area: area }
+    for (const [k, v] of Object.entries(props)) {
+      if (k === 'geometry' || k === 'geom') continue
+      row[k] = v
+    }
+    return row
+  })
+}

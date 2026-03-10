@@ -50,6 +50,17 @@ declare global {
         error?: string;
         canceled?: boolean;
       }>
+      openVectorForImport: () => Promise<{
+        success: boolean;
+        canceled?: boolean;
+        error?: string;
+        fileType?: string;
+        fileName?: string;
+        filePath?: string;
+        shapefileData?: { shp: ArrayBuffer; dbf: ArrayBuffer | null; prj: string | null; shx: ArrayBuffer | null };
+        data?: ArrayBuffer;
+        geoJsonFeatures?: Array<{ type?: string; geometry: unknown; properties?: Record<string, unknown> }>;
+      }>
       quickSave: (data: string, filePath: string) => Promise<{ success: boolean; filePath?: string; error?: string }>
       exportFile: (data: string, format: string, defaultPath?: string) => Promise<{ success: boolean; filePath?: string; error?: string; canceled?: boolean }>
       onTriggerSave: (callback: () => void) => () => void

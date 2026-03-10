@@ -272,6 +272,7 @@ function createWindow() {
 app.whenReady().then(() => {
   createWindow()
   registerOpenShapefileHandler()
+  registerOpenVectorForImportHandler()
 })
 
 // Handle app quit with unsaved changes check
@@ -718,6 +719,100 @@ ipcMain.handle('open-layer', async () => {
 
   return { success: false, canceled: true }
 })
+
+// Open a vector file for import (GeoPackage or shapefile). Registered in whenReady so it's always available.
+function registerOpenVectorForImportHandler() {
+  ipcMain.handle('open-vector-for-import', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Import GeoPackage or Shapefile',
+      filters: [
+        { name: 'GeoPackage & Shapefile', extensions: ['gpkg', 'shp', 'zip'] },
+        { name: 'GeoPackage', extensions: ['gpkg'] },
+        { name: 'Shapefile', extensions: ['shp', 'zip'] },
+        { name: 'All Files', extensions: ['*'] }
+      ],
+      properties: ['openFile']
+    })
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: false, canceled: true }
+    }
+
+    const filePath = result.filePaths[0]
+    const fileName = path.basename(filePath)
+    const ext = path.extname(filePath).toLowerCase()
+    const dir = path.dirname(filePath)
+    const baseName = path.basename(filePath, ext)
+
+    const stats = fs.statSync(filePath)
+    const fileSizeMB = stats.size / (1024 * 1024)
+    if (fileSizeMB > 500) {
+      await dialog.showMessageBox(mainWindow, {
+        type: 'error',
+        buttons: ['OK'],
+        title: 'File Too Large',
+        message: `This file is ${fileSizeMB.toFixed(0)}MB which exceeds the 500MB limit.`
+      })
+      return { success: false, error: 'File too large (max 500MB)' }
+    }
+
+    try {
+      if (ext === '.gpkg') {
+        try {
+          const { GeoPackageAPI, BoundingBox } = require('@ngageoint/geopackage')
+          const gp = await GeoPackageAPI.open(filePath)
+          const tables = gp.getFeatureTables()
+          if (!tables || tables.length === 0) {
+            gp.close()
+            return { success: false, error: 'No feature tables in GeoPackage' }
+          }
+          const tableName = tables[0]
+          const bbox = new BoundingBox(-180, 180, -90, 90)
+          const features = gp.queryForGeoJSONFeaturesInTable(tableName, bbox)
+          gp.close()
+          return { success: true, fileType: 'geopackage', fileName, geoJsonFeatures: features }
+        } catch (gpErr) {
+          const msg = gpErr && gpErr.message ? gpErr.message : String(gpErr)
+          if (msg.includes('sql-wasm') || msg.includes('ENOENT') || msg.includes('WASM')) {
+            return { success: false, error: 'GeoPackage support requires the better-sqlite3 module. Run: npm install better-sqlite3. Then restart the app. You can still use Shapefile (.shp / .zip).' }
+          }
+          throw gpErr
+        }
+      }
+
+      if (ext === '.shp') {
+        const shapefileData = {
+          shp: fs.readFileSync(filePath).buffer,
+          dbf: null,
+          prj: null,
+          shx: null
+        }
+        const dbfPath = path.join(dir, baseName + '.dbf')
+        const prjPath = path.join(dir, baseName + '.prj')
+        const shxPath = path.join(dir, baseName + '.shx')
+        const dbfPathUpper = path.join(dir, baseName + '.DBF')
+        const prjPathUpper = path.join(dir, baseName + '.PRJ')
+        const shxPathUpper = path.join(dir, baseName + '.SHX')
+        if (fs.existsSync(dbfPath)) shapefileData.dbf = fs.readFileSync(dbfPath).buffer
+        else if (fs.existsSync(dbfPathUpper)) shapefileData.dbf = fs.readFileSync(dbfPathUpper).buffer
+        if (fs.existsSync(prjPath)) shapefileData.prj = fs.readFileSync(prjPath).toString()
+        else if (fs.existsSync(prjPathUpper)) shapefileData.prj = fs.readFileSync(prjPathUpper).toString()
+        if (fs.existsSync(shxPath)) shapefileData.shx = fs.readFileSync(shxPath).buffer
+        else if (fs.existsSync(shxPathUpper)) shapefileData.shx = fs.readFileSync(shxPathUpper).buffer
+        return { success: true, fileType: 'shapefile', shapefileData, fileName, filePath }
+      }
+
+      if (ext === '.zip') {
+        const data = fs.readFileSync(filePath)
+        return { success: true, fileType: 'shapefile-zip', data: data.buffer, fileName, filePath }
+      }
+
+      return { success: false, error: 'Please select a .gpkg, .shp or .zip file' }
+    } catch (error) {
+      return { success: false, error: error.message }
+    }
+  })
+}
 
 // Open a shapefile only (for adding to a paint class). Registered in whenReady so it's always available.
 function registerOpenShapefileHandler() {
