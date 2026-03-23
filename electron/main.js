@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, session } = require('electron')
 const path = require('path')
 const fs = require('fs')
 
@@ -268,8 +268,27 @@ function createWindow() {
   })
 }
 
+// OSM public tiles require a User-Agent that identifies the app (not a generic browser/Electron default).
+// https://operations.osmfoundation.org/policies/tiles/
+// Without this, tile.openstreetmap.org often returns 403 for Electron apps (especially with file:// loads).
+const OSM_TILE_USER_AGENT =
+  'OffLIMMMA/1.0.1 (Electron desktop app; offline map annotation)'
+
 // App ready
 app.whenReady().then(() => {
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    {
+      urls: [
+        'https://tile.openstreetmap.org/*',
+        'https://*.tile.openstreetmap.org/*'
+      ]
+    },
+    (details, callback) => {
+      details.requestHeaders['User-Agent'] = OSM_TILE_USER_AGENT
+      callback({ requestHeaders: details.requestHeaders })
+    }
+  )
+
   createWindow()
   registerOpenShapefileHandler()
   registerOpenVectorForImportHandler()

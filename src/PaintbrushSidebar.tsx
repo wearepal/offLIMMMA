@@ -1022,12 +1022,12 @@ export const PaintbrushSidebar: React.FC<PaintbrushSidebarProps> = ({
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
                     <thead>
                       <tr style={{ background: "#f1f3f9", borderBottom: "1px solid #e8ecf4" }}>
+                        <th style={{ padding: "8px 10px", textAlign: "left", fontWeight: 600, color: "#4d5c7b" }}>Class</th>
                         {allKeys.map(key => (
                           <th key={key} style={{ padding: "8px 10px", textAlign: "left", fontWeight: 600, color: "#4d5c7b" }}>
                             {key === "__index" ? "#" : key === "__area" ? "Area (m²)" : key}
                           </th>
                         ))}
-                        <th style={{ padding: "8px 10px", textAlign: "left", fontWeight: 600, color: "#4d5c7b" }}>Class</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1044,17 +1044,6 @@ export const PaintbrushSidebar: React.FC<PaintbrushSidebarProps> = ({
                               transition: "background 0.12s ease"
                             }}
                           >
-                            {allKeys.map(key => (
-                              <td key={key} style={{ padding: "6px 10px", color: "#1f2d3d" }}>
-                              {key === "__area" && row[key] != null
-                                ? typeof row[key] === "number"
-                                  ? (row[key] as number) >= 1e6
-                                    ? ((row[key] as number) / 1e6).toFixed(2) + " km²"
-                                    : (row[key] as number).toFixed(0) + " m²"
-                                  : String(row[key])
-                                : String(row[key] ?? "")}
-                              </td>
-                            ))}
                             <td style={{ padding: "4px 8px" }}>
                               <select
                                 className="input"
@@ -1075,6 +1064,17 @@ export const PaintbrushSidebar: React.FC<PaintbrushSidebarProps> = ({
                                 ))}
                               </select>
                             </td>
+                            {allKeys.map(key => (
+                              <td key={key} style={{ padding: "6px 10px", color: "#1f2d3d" }}>
+                                {key === "__area" && row[key] != null
+                                  ? typeof row[key] === "number"
+                                    ? (row[key] as number) >= 1e6
+                                      ? ((row[key] as number) / 1e6).toFixed(2) + " km²"
+                                      : (row[key] as number).toFixed(0) + " m²"
+                                    : String(row[key])
+                                  : String(row[key] ?? "")}
+                              </td>
+                            ))}
                           </tr>
                         )
                       })}
