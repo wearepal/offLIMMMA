@@ -743,11 +743,12 @@ ipcMain.handle('open-layer', async () => {
 function registerOpenVectorForImportHandler() {
   ipcMain.handle('open-vector-for-import', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: 'Import GeoPackage or Shapefile',
+      title: 'Import GeoPackage, Shapefile, or KML',
       filters: [
-        { name: 'GeoPackage & Shapefile', extensions: ['gpkg', 'shp', 'zip'] },
+        { name: 'GeoPackage, Shapefile & KML', extensions: ['gpkg', 'shp', 'zip', 'kml'] },
         { name: 'GeoPackage', extensions: ['gpkg'] },
         { name: 'Shapefile', extensions: ['shp', 'zip'] },
+        { name: 'KML', extensions: ['kml'] },
         { name: 'All Files', extensions: ['*'] }
       ],
       properties: ['openFile']
@@ -826,7 +827,12 @@ function registerOpenVectorForImportHandler() {
         return { success: true, fileType: 'shapefile-zip', data: data.buffer, fileName, filePath }
       }
 
-      return { success: false, error: 'Please select a .gpkg, .shp or .zip file' }
+      if (ext === '.kml') {
+        const data = fs.readFileSync(filePath)
+        return { success: true, fileType: 'kml', data: data.buffer, fileName, filePath }
+      }
+
+      return { success: false, error: 'Please select a .gpkg, .shp, .zip, or .kml file' }
     } catch (error) {
       return { success: false, error: error.message }
     }

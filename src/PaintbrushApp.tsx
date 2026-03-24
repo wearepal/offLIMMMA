@@ -1,7 +1,7 @@
 import * as React from "react"
 import { PaintbrushMap, PaintbrushMapRef, BoundingBox } from "./PaintbrushMap"
 import { GeoTIFFLayer, loadGeoTIFF } from "./utils/geotiff_utils"
-import { VectorFileLayer, loadShapefileFromComponents, loadShapefileFromZip, loadGeoJSONFile, loadKMLFile, parseShapefileToOlFeaturesFromComponents, parseShapefileToOlFeaturesFromZip, parseGeoJSONFeaturesToOlFeatures, buildTableRowsFromFeatures } from "./utils/vector_utils"
+import { VectorFileLayer, loadShapefileFromComponents, loadShapefileFromZip, loadGeoJSONFile, loadKMLFile, parseShapefileToOlFeaturesFromComponents, parseShapefileToOlFeaturesFromZip, parseGeoJSONFeaturesToOlFeatures, buildTableRowsFromFeatures, parseKMLToOlFeatures } from "./utils/vector_utils"
 import type Feature from "ol/Feature"
 import type Geometry from "ol/geom/Geometry"
 import { PaintbrushToolbar } from "./PaintbrushToolbar"
@@ -536,6 +536,8 @@ export const PaintbrushApp: React.FC = () => {
         )
       } else if (result.fileType === "shapefile-zip" && result.data) {
         olFeatures = await parseShapefileToOlFeaturesFromZip(result.data)
+      } else if (result.fileType === "kml" && result.data) {
+        olFeatures = parseKMLToOlFeatures(result.data)
       } else {
         setLoadingMessage("")
         setIsLoadingLayer(false)
@@ -563,6 +565,11 @@ export const PaintbrushApp: React.FC = () => {
     const paintClass = paintClassOverride ?? classes.find(c => c.id === classId)
     if (!paintClass) return
     features.forEach(f => {
+      // Imported KML features may carry feature-level styles (often outline-only).
+      // Clear them so layer/class styling (including fill) is used.
+      if (typeof (f as any).setStyle === "function") {
+        ;(f as any).setStyle(undefined)
+      }
       f.set("classId", classId)
       f.set("strokeColor", paintClass.color)
       const classOpacity = paintClass.opacity ?? 1

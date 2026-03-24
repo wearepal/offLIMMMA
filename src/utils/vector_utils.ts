@@ -346,6 +346,19 @@ export function parseGeoJSONFeaturesToOlFeatures(geoJsonFeatures: Array<{ type?:
 }
 
 /**
+ * Parse a KML file buffer to OpenLayers features in Web Mercator.
+ */
+export function parseKMLToOlFeatures(arrayBuffer: ArrayBuffer): Feature<Geometry>[] {
+  const decoder = new TextDecoder('utf-8')
+  const kmlString = decoder.decode(arrayBuffer)
+  const format = new KML({ extractStyles: true })
+  return format.readFeatures(kmlString, {
+    dataProjection: 'EPSG:4326',
+    featureProjection: 'EPSG:3857'
+  }) as Feature<Geometry>[]
+}
+
+/**
  * Build table rows from OL features for display: index, area (m²), and attribute properties.
  */
 export function buildTableRowsFromFeatures(olFeatures: Feature<Geometry>[]): Record<string, unknown>[] {

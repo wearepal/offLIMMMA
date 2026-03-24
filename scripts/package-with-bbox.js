@@ -28,10 +28,12 @@ console.log(`✓ Updated config.json with bounding box: ${bboxString}, EPSG: ${e
 // Run the package command (remove our custom args first)
 const packageArgs = args.filter((arg, i) => i !== bboxIndex && i !== epsgIndex)
 const platform = packageArgs.find(arg => ['--win', '--mac', '--linux'].includes(arg)) || ''
+const extraEbArgs = packageArgs.filter(arg => !['--win', '--mac', '--linux'].includes(arg))
+const ebCli = [platform, ...extraEbArgs].filter(Boolean).join(' ')
 
 console.log('Building package...')
 try {
-  execSync(`npm run build && electron-builder ${platform}`, { stdio: 'inherit' })
+  execSync(`npm run build && electron-builder ${ebCli}`, { stdio: 'inherit' })
   console.log('✓ Package built successfully with default bounding box!')
 } catch (error) {
   console.error('✗ Build failed:', error.message)

@@ -1,6 +1,6 @@
 {
   "name": "offlimmma",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "description": "A standalone offline map annotation and polygon painting application",
   "main": "electron/main.js",
   "scripts": {
@@ -17,9 +17,10 @@
     "package:linux": "npm run build && electron-builder --linux",
     "package:win:bbox": "node scripts/package-with-bbox.js --win",
     "package:mac:bbox": "node scripts/package-with-bbox.js --mac",
+    "package:mac:zip:bbox": "node scripts/package-with-bbox.js --mac --config.mac.target=zip",
     "package:linux:bbox": "node scripts/package-with-bbox.js --linux",
-    "docker:build:mac": "docker build -t offlimmma-builder . && docker run --rm -v \"%cd%/release:/app/release\" -v \"%cd%/.cache:/app/.cache\" offlimmma-builder npm run package:mac",
-    "docker:build:mac:bbox": "docker build -t offlimmma-builder . && docker run --rm -v \"%cd%/release:/app/release\" -v \"%cd%/.cache:/app/.cache\" offlimmma-builder npm run package:mac:bbox"
+    "docker:build:mac": "docker build -t offlimmma-builder . && docker run --rm -v \"%cd%/release:/app/release\" -v \"%cd%/.cache:/app/.cache\" offlimmma-builder npm run package:mac:zip",
+    "docker:build:mac:bbox": "docker build -t offlimmma-builder . && docker run --rm -v \"%cd%/release:/app/release\" -v \"%cd%/.cache:/app/.cache\" offlimmma-builder npm run package:mac:zip:bbox -- --bbox=-180,-90,180,90"
   },
   "build": {
     "appId": "com.offlimmma.app",
@@ -76,6 +77,9 @@
     "wait-on": "^7.2.0",
     "webpack": "^5.89.0",
     "webpack-cli": "^5.1.4"
+  },
+  "optionalDependencies": {
+    "dmg-license": "^1.0.11"
   },
   "dependencies": {
     "@ngageoint/geopackage": "^4.2.6",
