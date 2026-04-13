@@ -21,6 +21,30 @@ This is an Electron application developed to generate GeoJSON annotation data fo
    npm install
    ```
 
+### GeoPackage Support
+
+GeoPackage import is bundled via `sql-wasm` and works without native SQLite build tooling.
+
+- `.gpkg`, `.shp`, `.zip`, and `.kml` are supported in normal installs.
+- No manual native-module setup is required for GeoPackage support.
+
+### Reproducible Environment
+
+For consistent local results across machines, use:
+
+- Node.js `20.x`
+- npm `10.x` (the project is pinned via `packageManager` to `npm@10.5.0`)
+
+If you use `nvm`:
+
+```bash
+nvm use
+# (or: nvm install 20 && nvm use 20)
+npm install
+```
+
+The repository includes an `.nvmrc` pinned to Node `20`.
+
 ## Usage
 
 ### Development

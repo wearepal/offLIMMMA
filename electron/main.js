@@ -7,6 +7,21 @@ let mainWindow
 let hasUnsavedChanges = false
 let isHandlingQuit = false
 
+function getGeoPackageSqlWasmDistPath() {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'rtree-sql.js', 'dist')
+  }
+  return path.join(app.getAppPath(), 'node_modules', 'rtree-sql.js', 'dist')
+}
+
+function configureGeoPackageSqlWasm(setSqljsWasmLocateFile) {
+  if (typeof setSqljsWasmLocateFile !== 'function') return
+  const sqlWasmDistPath = getGeoPackageSqlWasmDistPath()
+  const wasmFilePath = path.join(sqlWasmDistPath, 'sql-wasm.wasm')
+  if (!fs.existsSync(wasmFilePath)) return
+  setSqljsWasmLocateFile((file) => path.join(sqlWasmDistPath, file))
+}
+
 // Load default bounding box from config file (if exists)
 function loadDefaultBoundingBox() {
   try {
@@ -779,7 +794,17 @@ function registerOpenVectorForImportHandler() {
     try {
       if (ext === '.gpkg') {
         try {
-          const { GeoPackageAPI, BoundingBox } = require('@ngageoint/geopackage')
+          const {
+            GeoPackageAPI,
+            BoundingBox,
+            Context,
+            SqljsAdapter,
+            CanvasKitCanvasAdapter,
+            setSqljsWasmLocateFile
+          } = require('@ngageoint/geopackage')
+          // Force sql.js in Node to avoid native better-sqlite3 binding issues.
+          Context.setupCustomContext(SqljsAdapter, CanvasKitCanvasAdapter)
+          configureGeoPackageSqlWasm(setSqljsWasmLocateFile)
           const gp = await GeoPackageAPI.open(filePath)
           const tables = gp.getFeatureTables()
           if (!tables || tables.length === 0) {
@@ -794,7 +819,7 @@ function registerOpenVectorForImportHandler() {
         } catch (gpErr) {
           const msg = gpErr && gpErr.message ? gpErr.message : String(gpErr)
           if (msg.includes('sql-wasm') || msg.includes('ENOENT') || msg.includes('WASM')) {
-            return { success: false, error: 'GeoPackage support requires the better-sqlite3 module. Run: npm install better-sqlite3. Then restart the app. You can still use Shapefile (.shp / .zip).' }
+            return { success: false, error: 'GeoPackage runtime failed to load (sql-wasm). Reinstall dependencies and restart the app.' }
           }
           throw gpErr
         }

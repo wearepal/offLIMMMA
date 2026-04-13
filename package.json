@@ -2,13 +2,17 @@
   "name": "offlimmma",
   "version": "1.0.3",
   "description": "A standalone offline map annotation and polygon painting application",
+  "packageManager": "npm@10.5.0",
+  "engines": {
+    "node": ">=20 <21",
+    "npm": ">=10 <11"
+  },
   "main": "electron/main.js",
   "scripts": {
     "start": "npm run build && electron .",
     "dev": "concurrently \"npm run watch\" \"wait-on dist/renderer.js && electron .\"",
     "build": "webpack --mode production",
-    "rebuild": "electron-rebuild -f -w better-sqlite3",
-    "postinstall": "electron-rebuild -f -w better-sqlite3",
+    "postinstall": "echo GeoPackage support is bundled via sql-wasm.",
     "watch": "webpack --mode development --watch",
     "package": "npm run build && electron-builder",
     "package:win": "npm run build && electron-builder --win",
@@ -33,6 +37,9 @@
       "electron/**/*",
       "public/**/*",
       "electron/config.json"
+    ],
+    "asarUnpack": [
+      "node_modules/rtree-sql.js/dist/sql-wasm.wasm"
     ],
     "win": {
       "target": "portable",
@@ -83,7 +90,6 @@
   },
   "dependencies": {
     "@ngageoint/geopackage": "^4.2.6",
-    "better-sqlite3": "^11.6.0",
     "buffer": "^6.0.3",
     "distinct-colors": "^3.0.0",
     "geotiff": "^2.1.3",
