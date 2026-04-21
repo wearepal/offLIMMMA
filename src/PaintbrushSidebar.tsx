@@ -69,6 +69,7 @@ export const PaintbrushSidebar: React.FC<PaintbrushSidebarProps> = ({
   const [filterField, setFilterField] = React.useState<string>("")
   const [filterText, setFilterText] = React.useState<string>("")
   const [bulkClassId, setBulkClassId] = React.useState<number | null>(null)
+  const [classifyField, setClassifyField] = React.useState<string>("")
   const bulkClass = React.useMemo(
     () => (bulkClassId != null ? classes.find(c => c.id === bulkClassId) ?? null : null),
     [classes, bulkClassId]
@@ -81,7 +82,83 @@ export const PaintbrushSidebar: React.FC<PaintbrushSidebarProps> = ({
     }
     setFilterField("")
     setFilterText("")
+    setClassifyField("")
   }, [importFileResult])
+
+  // Create (or reuse) a class for every distinct value of a field and
+  // auto-assign rows accordingly. Respects the current filter so the user
+  // can narrow down which rows are classified.
+  const handleClassifyByField = React.useCallback(() => {
+    if (!importFileResult || !classifyField) return
+    const allKeys = Object.keys(importFileResult.tableRows[0] || {}) as string[]
+    const indexedRows = importFileResult.tableRows.map((row, i) => ({ row, index: i }))
+    const lowered = filterText.trim().toLowerCase()
+    const visibleRows = lowered
+      ? indexedRows.filter(({ row }) => {
+          if (filterField) {
+            const v = (row as any)[filterField]
+            return v != null && String(v).toLowerCase().includes(lowered)
+          }
+          return allKeys
+            .filter(k => k !== "__index")
+            .some(k => {
+              const v = (row as any)[k]
+              return v != null && String(v).toLowerCase().includes(lowered)
+            })
+        })
+      : indexedRows
+
+    // Collect distinct non-empty values (preserving first-seen order)
+    const valueOrder: string[] = []
+    const valuesPerIndex = new Map<number, string>()
+    for (const { row, index } of visibleRows) {
+      const raw = (row as any)[classifyField]
+      if (raw == null) continue
+      const value = String(raw).trim()
+      if (value === "") continue
+      valuesPerIndex.set(index, value)
+      if (!valueOrder.includes(value)) valueOrder.push(value)
+    }
+    if (valueOrder.length === 0) return
+
+    // Map value -> class id, reusing existing classes with the same name
+    // (case-insensitive) and otherwise creating new classes with distinct colors.
+    const existingByName = new Map<string, PaintClass>()
+    for (const c of classes) existingByName.set(c.name.toLowerCase(), c)
+
+    const valueToClassId = new Map<string, number>()
+    const newClasses: PaintClass[] = []
+    // Track "pending" classes (existing + freshly created) so color picking
+    // stays distinct across multiple new classes created in this pass.
+    const pendingForColor: PaintClass[] = [...classes]
+    for (const value of valueOrder) {
+      const existing = existingByName.get(value.toLowerCase())
+      if (existing) {
+        valueToClassId.set(value, existing.id)
+        continue
+      }
+      const color = getNextDistinctColor(pendingForColor)
+      // Ensure unique id even when created in the same millisecond
+      const id = Date.now() + newClasses.length
+      const newClass: PaintClass = { id, name: value, color, opacity: 1 }
+      newClasses.push(newClass)
+      pendingForColor.push(newClass)
+      valueToClassId.set(value, id)
+    }
+
+    if (newClasses.length > 0) {
+      setClasses(prev => [...prev, ...newClasses])
+    }
+
+    setRowClassAssignments(prev => {
+      const next = [...prev]
+      valuesPerIndex.forEach((value, index) => {
+        const classId = valueToClassId.get(value)
+        if (classId != null) next[index] = classId
+      })
+      return next
+    })
+  }, [importFileResult, classifyField, filterField, filterText, classes, setClasses])
   
   const handleAddClass = () => {
     const newClassIndex = classes.length + 1
@@ -997,6 +1074,75 @@ export const PaintbrushSidebar: React.FC<PaintbrushSidebarProps> = ({
               >
                 Set as class
               </button>
+            </div>
+            {/* Auto-classify: create one class per distinct value of a field */}
+            <div style={{
+              display: "flex",
+              gap: "8px",
+              alignItems: "center",
+              marginBottom: "8px",
+              flexShrink: 0
+            }}>
+              <span style={{ fontSize: "11px", fontWeight: 600, color: "#8492a6", whiteSpace: "nowrap" }}>
+                Classify by
+              </span>
+              <select
+                className="input"
+                style={{ fontSize: "12px", padding: "4px 6px", width: "160px", flexShrink: 0, flexGrow: 0 }}
+                value={classifyField}
+                onChange={e => setClassifyField(e.target.value)}
+              >
+                <option value="">Select field...</option>
+                {(Object.keys(importFileResult.tableRows[0] || {}) as string[])
+                  .filter(key => key !== "__index" && key !== "__area")
+                  .map(key => (
+                    <option key={key} value={key}>{key}</option>
+                  ))}
+              </select>
+              <button
+                className="btn btn-secondary btn-sm"
+                style={{ whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: "4px" }}
+                disabled={!classifyField}
+                onClick={handleClassifyByField}
+                title="Create a class for each distinct value of the selected field and assign rows automatically"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <polyline points="20 6 9 17 4 12" />
+                  <circle cx="18" cy="18" r="3" />
+                </svg>
+                Create classes
+              </button>
+              {classifyField && (() => {
+                const allKeys = Object.keys(importFileResult.tableRows[0] || {}) as string[]
+                const indexedRows = importFileResult.tableRows.map((row, i) => ({ row, index: i }))
+                const lowered = filterText.trim().toLowerCase()
+                const visibleRows = lowered
+                  ? indexedRows.filter(({ row }) => {
+                      if (filterField) {
+                        const v = (row as any)[filterField]
+                        return v != null && String(v).toLowerCase().includes(lowered)
+                      }
+                      return allKeys
+                        .filter(k => k !== "__index")
+                        .some(k => {
+                          const v = (row as any)[k]
+                          return v != null && String(v).toLowerCase().includes(lowered)
+                        })
+                    })
+                  : indexedRows
+                const distinct = new Set<string>()
+                visibleRows.forEach(({ row }) => {
+                  const raw = (row as any)[classifyField]
+                  if (raw == null) return
+                  const value = String(raw).trim()
+                  if (value !== "") distinct.add(value)
+                })
+                return (
+                  <span style={{ fontSize: "11px", color: "#8492a6", whiteSpace: "nowrap" }}>
+                    {distinct.size} distinct value{distinct.size === 1 ? "" : "s"}
+                  </span>
+                )
+              })()}
             </div>
             {(() => {
               const allKeys = Object.keys(importFileResult.tableRows[0] || {}) as string[]

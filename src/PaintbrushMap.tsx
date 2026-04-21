@@ -13,7 +13,14 @@ import LineString from "ol/geom/LineString"
 import Point from "ol/geom/Point"
 import Polygon from "ol/geom/Polygon"
 import MultiPolygon from "ol/geom/MultiPolygon"
+import MultiPoint from "ol/geom/MultiPoint"
 import DragPan from "ol/interaction/DragPan"
+import Select from "ol/interaction/Select"
+import Modify from "ol/interaction/Modify"
+import Translate from "ol/interaction/Translate"
+import Snap from "ol/interaction/Snap"
+import Draw from "ol/interaction/Draw"
+import { click as clickCondition } from "ol/events/condition"
 import MapBrowserEvent from "ol/MapBrowserEvent"
 import { unByKey } from "ol/Observable"
 import GeoJSON from "ol/format/GeoJSON"
@@ -81,6 +88,11 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
   ({ activeTool, paintStyle, selectedClass, opacity, snapToBoundaryEnabled = true, classes, onUndoRedoStateChange, geoJsonData, onClassesRestored, onLoadingChange, onDataChange, geotiffLayers, vectorLayers, layers, onCachedTileUsed }, ref) => {
   const mapRef = React.useRef<HTMLDivElement>(null)
   const [map, setMap] = React.useState<Map | null>(null)
+  const [selectedEditFeature, setSelectedEditFeature] = React.useState<Feature | null>(null)
+  const [splitMode, setSplitMode] = React.useState(false)
+  const selectInteractionRef = React.useRef<Select | null>(null)
+  const modifyInteractionRef = React.useRef<Modify | null>(null)
+  const translateInteractionRef = React.useRef<Translate | null>(null)
   const vectorSourceRef = React.useRef<VectorSource | null>(null)
   const dragPanInteractionsRef = React.useRef<DragPan[]>([])
   const isPaintingRef = React.useRef(false)
@@ -1504,6 +1516,678 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
     }
   }, [map, activeTool, saveState])
 
+  // Cursor (select / edit vertices / translate) functionality
+  React.useEffect(() => {
+    if (!map || !vectorSourceRef.current || !vectorLayerRef.current) return
+    if (activeTool !== ToolMode.Cursor) return
+
+    const vectorLayer = vectorLayerRef.current
+    const vectorSource = vectorSourceRef.current
+
+    // Trim a feature's polygon/multipolygon geometry against all other-class
+    // polygons so boundaries stay flush. Mirrors the drawing-commit logic.
+    const trimFeatureAgainstOtherClasses = (feature: Feature): boolean => {
+      const classId = feature.get("classId")
+      if (classId == null) return false
+      const geometry = feature.getGeometry()
+      if (!(geometry instanceof Polygon) && !(geometry instanceof MultiPolygon)) return false
+
+      try {
+        const jsts = (window as any).jsts
+        if (!jsts?.io?.GeoJSONReader || !jsts?.io?.GeoJSONWriter) return false
+
+        const jstsReader = new jsts.io.GeoJSONReader()
+        const jstsWriter = new jsts.io.GeoJSONWriter()
+
+        const precisionScale = 1e6
+        const reducer =
+          jsts?.precision?.GeometryPrecisionReducer && jsts?.geom?.PrecisionModel
+            ? new jsts.precision.GeometryPrecisionReducer(new jsts.geom.PrecisionModel(precisionScale))
+            : null
+        if (reducer) {
+          reducer.setChangePrecisionModel(true)
+          reducer.setRemoveCollapsedComponents(true)
+        }
+
+        const featureGeo = geoJsonFormat.current.writeGeometryObject(geometry)
+        let featureJsts = jstsReader.read(featureGeo)
+        try { featureJsts = featureJsts.buffer(0) } catch {}
+        if (reducer) {
+          try { featureJsts = reducer.reduce(featureJsts) } catch {}
+        }
+
+        const others = vectorSource.getFeatures().filter(f => {
+          if (f === feature) return false
+          if (f.get(TRANSIENT_KEY)) return false
+          const otherClassId = f.get("classId")
+          if (otherClassId == null || otherClassId === classId) return false
+          const g = f.getGeometry()
+          return g instanceof Polygon || g instanceof MultiPolygon
+        })
+
+        let changed = false
+        for (const f of others) {
+          const g = f.getGeometry() as Polygon | MultiPolygon
+          const otherGeo = geoJsonFormat.current.writeGeometryObject(g)
+          let otherJsts = jstsReader.read(otherGeo)
+          try { otherJsts = otherJsts.buffer(0) } catch {}
+          if (reducer) {
+            try { otherJsts = reducer.reduce(otherJsts) } catch {}
+          }
+
+          if (featureJsts.intersects(otherJsts) || featureJsts.touches(otherJsts)) {
+            try {
+              const diff = featureJsts.difference(otherJsts)
+              featureJsts = diff
+              try { featureJsts = featureJsts.buffer(0) } catch {}
+              if (reducer) {
+                try { featureJsts = reducer.reduce(featureJsts) } catch {}
+              }
+              changed = true
+            } catch {
+              // ignore individual failures
+            }
+          }
+        }
+
+        if (!changed) return false
+        if (featureJsts.isEmpty && featureJsts.isEmpty()) return false
+
+        const trimmedGeo = jstsWriter.write(featureJsts)
+        const trimmedOl = geoJsonFormat.current.readGeometry(trimmedGeo, {
+          dataProjection: 'EPSG:3857',
+          featureProjection: 'EPSG:3857'
+        })
+        if (trimmedOl) {
+          feature.setGeometry(trimmedOl)
+          return true
+        }
+        return false
+      } catch {
+        return false
+      }
+    }
+
+    // Style for selected features: filled highlight + dashed stroke + vertex handles.
+    // Color reflects the feature's class color for clear association.
+    const selectionStyle = (feature: FeatureLike) => {
+      const f = feature as Feature
+      const geometry = f.getGeometry()
+      const isPolygon = geometry instanceof Polygon || geometry instanceof MultiPolygon
+      const classId = f.get("classId")
+      const paintClass = classesRef.current.find(c => c.id === classId)
+      const classColor = paintClass?.color || f.get("strokeColor") || "#2563eb"
+      const styles: Style[] = [
+        new Style({
+          stroke: new Stroke({
+            color: classColor,
+            width: 3,
+            lineDash: [6, 4]
+          }),
+          fill: isPolygon ? new Fill({ color: hexToRgba(classColor, 0.25) }) : undefined
+        }),
+        new Style({
+          image: new CircleStyle({
+            radius: 6,
+            fill: new Fill({ color: "#ffffff" }),
+            stroke: new Stroke({ color: classColor, width: 2 })
+          }),
+          geometry: (feat: FeatureLike) => {
+            const g = (feat as Feature).getGeometry()
+            if (g instanceof Polygon) {
+              const rings = g.getCoordinates()
+              const points: number[][] = []
+              rings.forEach(ring => {
+                // Skip the duplicate closing vertex on each ring
+                const endIdx = ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
+                  ? ring.length - 1
+                  : ring.length
+                for (let i = 0; i < endIdx; i++) points.push(ring[i])
+              })
+              return new MultiPoint(points)
+            }
+            if (g instanceof MultiPolygon) {
+              const polys = g.getCoordinates()
+              const points: number[][] = []
+              polys.forEach(rings => {
+                rings.forEach(ring => {
+                  const endIdx = ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
+                    ? ring.length - 1
+                    : ring.length
+                  for (let i = 0; i < endIdx; i++) points.push(ring[i])
+                })
+              })
+              return new MultiPoint(points)
+            }
+            if (g instanceof LineString) {
+              return new MultiPoint(g.getCoordinates())
+            }
+            return undefined as any
+          }
+        })
+      ]
+      return styles
+    }
+
+    const select = new Select({
+      condition: clickCondition,
+      layers: [vectorLayer],
+      filter: (feature) => !feature.get(TRANSIENT_KEY),
+      style: selectionStyle as any,
+      hitTolerance: 5
+    })
+    map.addInteraction(select)
+    selectInteractionRef.current = select
+
+    // Track the current selection reactively. Listen to the features
+    // collection directly so both user clicks and programmatic changes
+    // (clear(), deselect via Esc or the panel close button) stay in sync.
+    const syncSelection = () => {
+      const features = select.getFeatures().getArray()
+      const next = (features[0] as Feature) ?? null
+      setSelectedEditFeature(next)
+      if (!next) setSplitMode(false)
+    }
+    const selectAddKey = select.getFeatures().on("add" as any, syncSelection)
+    const selectRemoveKey = select.getFeatures().on("remove" as any, syncSelection)
+
+    // Translate: drag the interior of a selected feature to move it.
+    // Added first so Modify (added after) gets priority on pointer events,
+    // letting it claim vertex drags before Translate can start moving the shape.
+    const translate = new Translate({
+      features: select.getFeatures(),
+      hitTolerance: 0
+    })
+    map.addInteraction(translate)
+    translateInteractionRef.current = translate
+
+    // Live snap-to-boundary while translating a shape:
+    // compute the smallest offset that pulls any vertex of the dragged shape
+    // onto a nearby other-class polygon boundary, and apply it each frame.
+    // We recompute from the stored start geometry + cumulative pointer delta
+    // so snap corrections don't accumulate.
+    let translateStartGeom: Geometry | null = null
+    let translateStartCoord: number[] | null = null
+    let translateActiveFeature: Feature | null = null
+    let translateSnapIndicator: Feature | null = null
+
+    const clearTranslateSnapIndicator = () => {
+      if (translateSnapIndicator && vectorSource.hasFeature(translateSnapIndicator)) {
+        vectorSource.removeFeature(translateSnapIndicator)
+      }
+      translateSnapIndicator = null
+    }
+
+    const showTranslateSnapIndicator = (coord: number[]) => {
+      if (!translateSnapIndicator) {
+        const feat = new Feature({ geometry: new Point(coord) })
+        feat.set(TRANSIENT_KEY, true)
+        feat.setStyle(new Style({
+          image: new CircleStyle({
+            radius: 5,
+            fill: new Fill({ color: "#22c55e" }),
+            stroke: new Stroke({ color: "#ffffff", width: 2 })
+          })
+        }))
+        translateSnapIndicator = feat
+        vectorSource.addFeature(feat)
+      } else {
+        const geom = translateSnapIndicator.getGeometry()
+        if (geom instanceof Point) {
+          geom.setCoordinates(coord)
+        } else {
+          translateSnapIndicator.setGeometry(new Point(coord))
+        }
+      }
+    }
+
+    // Compute a snap offset (dx, dy) that pulls the closest vertex of `geometry`
+    // to a nearby other-class polygon boundary. Returns zeroes when no snap.
+    const computeTranslateSnapOffset = (
+      geometry: Polygon | MultiPolygon,
+      classId: unknown
+    ): { dx: number; dy: number; snapPoint: number[] | null } => {
+      const resolution = map.getView().getResolution() || 1
+      const snapTolerance = resolution * 12 // pixels -> map units
+
+      const otherFeatures = vectorSource.getFeatures().filter(f => {
+        if (f.get(TRANSIENT_KEY)) return false
+        if (f === translateActiveFeature) return false
+        const otherClassId = f.get("classId")
+        if (otherClassId == null || otherClassId === classId) return false
+        const g = f.getGeometry()
+        return g instanceof Polygon || g instanceof MultiPolygon
+      })
+      if (otherFeatures.length === 0) return { dx: 0, dy: 0, snapPoint: null }
+
+      const vertices: number[][] = []
+      if (geometry instanceof Polygon) {
+        geometry.getCoordinates().forEach(ring => {
+          const endIdx = ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
+            ? ring.length - 1
+            : ring.length
+          for (let i = 0; i < endIdx; i++) vertices.push(ring[i])
+        })
+      } else {
+        geometry.getCoordinates().forEach(polys => {
+          polys.forEach(ring => {
+            const endIdx = ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
+              ? ring.length - 1
+              : ring.length
+            for (let i = 0; i < endIdx; i++) vertices.push(ring[i])
+          })
+        })
+      }
+
+      let bestDx = 0
+      let bestDy = 0
+      let bestDist = Infinity
+      let bestSnapPoint: number[] | null = null
+
+      for (const v of vertices) {
+        for (const other of otherFeatures) {
+          const g = other.getGeometry() as Polygon | MultiPolygon
+          const rings: number[][][] = []
+          if (g instanceof Polygon) {
+            g.getCoordinates().forEach(r => rings.push(r))
+          } else {
+            g.getCoordinates().forEach(polys => polys.forEach(r => rings.push(r)))
+          }
+          for (const ring of rings) {
+            if (ring.length < 2) continue
+            const line = new LineString(ring)
+            const closest = line.getClosestPoint(v)
+            const dx = closest[0] - v[0]
+            const dy = closest[1] - v[1]
+            const dist = Math.hypot(dx, dy)
+            if (dist < snapTolerance && dist < bestDist) {
+              bestDist = dist
+              bestDx = dx
+              bestDy = dy
+              bestSnapPoint = closest
+            }
+          }
+        }
+      }
+
+      return { dx: bestDx, dy: bestDy, snapPoint: bestSnapPoint }
+    }
+
+    const translateStartKey = translate.on("translatestart" as any, (event: any) => {
+      const feats = event?.features?.getArray?.() ?? []
+      const feat = feats[0] as Feature | undefined
+      if (!feat) return
+      const geom = feat.getGeometry()
+      if (!(geom instanceof Polygon) && !(geom instanceof MultiPolygon)) {
+        translateStartGeom = null
+        translateActiveFeature = null
+        translateStartCoord = null
+        return
+      }
+      translateActiveFeature = feat
+      translateStartGeom = geom.clone()
+      translateStartCoord = event.coordinate
+    })
+
+    const translatingKey = translate.on("translating" as any, (event: any) => {
+      if (!snapToBoundaryEnabled) return
+      if (!translateStartGeom || !translateStartCoord || !translateActiveFeature) return
+      const currentCoord = event.coordinate
+      const dx = currentCoord[0] - translateStartCoord[0]
+      const dy = currentCoord[1] - translateStartCoord[1]
+
+      const translated = translateStartGeom.clone() as Polygon | MultiPolygon
+      translated.translate(dx, dy)
+
+      const { dx: snapDx, dy: snapDy, snapPoint } = computeTranslateSnapOffset(
+        translated,
+        translateActiveFeature.get("classId")
+      )
+      if (snapDx !== 0 || snapDy !== 0) {
+        translated.translate(snapDx, snapDy)
+      }
+
+      translateActiveFeature.setGeometry(translated)
+
+      if (snapPoint) {
+        // snapPoint is in the pre-correction frame; after correction the
+        // matching vertex lands exactly at snapPoint + (snapDx,snapDy) which
+        // equals snapPoint itself (target boundary point).
+        showTranslateSnapIndicator(snapPoint)
+      } else {
+        clearTranslateSnapIndicator()
+      }
+    })
+
+    // Modify: drag vertices (and insert new vertices by dragging segments).
+    // Added after Translate so it has priority over Translate for vertex hits.
+    const modify = new Modify({
+      features: select.getFeatures(),
+      pixelTolerance: 12
+    })
+    map.addInteraction(modify)
+    modifyInteractionRef.current = modify
+
+    // Snap: when snap-to-boundary is on, snap vertex drags / shape moves to
+    // existing paintbrush features, matching the drawing behavior. Must be
+    // added last so its coordinate adjustments take effect before the other
+    // interactions handle the pointer event.
+    let snap: Snap | null = null
+    if (snapToBoundaryEnabled) {
+      snap = new Snap({
+        source: vectorSource,
+        pixelTolerance: 10
+      })
+      map.addInteraction(snap)
+    }
+
+    // Update cursor to hint at interactivity:
+    // - "move" when hovering a selected shape (drag to translate)
+    // - "pointer" when hovering an unselected shape (click to select)
+    // - "grab" elsewhere (drag to pan)
+    const handlePointerMove = (event: MapBrowserEvent<UIEvent>) => {
+      if (event.dragging) return
+      const viewport = map.getViewport()
+      if (!viewport) return
+      const selectedFeatures = select.getFeatures().getArray()
+      let hitSelected = false
+      let hitAny = false
+      map.forEachFeatureAtPixel(
+        event.pixel,
+        (feature, layer) => {
+          if (layer !== vectorLayer) return false
+          if ((feature as Feature).get(TRANSIENT_KEY)) return false
+          hitAny = true
+          if (selectedFeatures.includes(feature as Feature)) {
+            hitSelected = true
+            return true
+          }
+          return false
+        },
+        { hitTolerance: 5 }
+      )
+      if (hitSelected) {
+        viewport.style.cursor = "move"
+      } else if (hitAny) {
+        viewport.style.cursor = "pointer"
+      } else {
+        viewport.style.cursor = "grab"
+      }
+    }
+
+    const pointerMoveKey = map.on("pointermove" as any, handlePointerMove)
+
+    const modifyEndKey = modify.on("modifyend" as any, (event: any) => {
+      if (snapToBoundaryEnabled) {
+        const features = event?.features?.getArray?.() ?? []
+        features.forEach((f: Feature) => trimFeatureAgainstOtherClasses(f))
+      }
+      saveState()
+    })
+    const translateEndKey = translate.on("translateend" as any, (event: any) => {
+      if (snapToBoundaryEnabled) {
+        const features = event?.features?.getArray?.() ?? []
+        features.forEach((f: Feature) => trimFeatureAgainstOtherClasses(f))
+      }
+      clearTranslateSnapIndicator()
+      translateStartGeom = null
+      translateStartCoord = null
+      translateActiveFeature = null
+      saveState()
+    })
+
+    // Pressing Escape clears selection
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement
+      if (target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.isContentEditable) return
+      if (event.key === 'Escape') {
+        select.getFeatures().clear()
+      } else if (event.key === 'Delete' || event.key === 'Backspace') {
+        const selected = select.getFeatures().getArray().slice()
+        if (selected.length > 0) {
+          event.preventDefault()
+          selected.forEach(f => {
+            if (vectorSourceRef.current?.hasFeature(f as Feature)) {
+              vectorSourceRef.current.removeFeature(f as Feature)
+            }
+          })
+          select.getFeatures().clear()
+          saveState()
+        }
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+
+    return () => {
+      map.removeInteraction(select)
+      map.removeInteraction(modify)
+      map.removeInteraction(translate)
+      if (snap) map.removeInteraction(snap)
+      unByKey(pointerMoveKey)
+      unByKey(modifyEndKey)
+      unByKey(translateEndKey)
+      unByKey(translateStartKey)
+      unByKey(translatingKey)
+      unByKey(selectAddKey)
+      unByKey(selectRemoveKey)
+      clearTranslateSnapIndicator()
+      window.removeEventListener('keydown', handleKeyDown)
+      selectInteractionRef.current = null
+      modifyInteractionRef.current = null
+      translateInteractionRef.current = null
+      setSelectedEditFeature(null)
+      setSplitMode(false)
+      const viewport = map.getViewport()
+      if (viewport) viewport.style.cursor = ""
+    }
+  }, [map, activeTool, saveState, snapToBoundaryEnabled])
+
+  // Change the class of the currently selected feature (cursor/edit mode).
+  const handleChangeSelectedFeatureClass = React.useCallback((newClassId: number) => {
+    const feature = selectedEditFeature
+    if (!feature) return
+    const newClass = classesRef.current.find(c => c.id === newClassId)
+    if (!newClass) return
+    const classOpacity = newClass.opacity ?? 1
+    const effectiveOpacity = classOpacity * opacity
+    feature.set("classId", newClass.id)
+    feature.set("strokeColor", newClass.color)
+    feature.set("opacity", effectiveOpacity)
+    // Clear style cache so the feature re-styles with the new class color,
+    // and nudge the layer / select interaction to re-render.
+    styleCacheRef.current = {}
+    vectorLayerRef.current?.changed()
+    selectInteractionRef.current?.getFeatures().changed()
+    feature.changed()
+    setSelectedEditFeature(feature)
+    saveState()
+  }, [selectedEditFeature, opacity, saveState])
+
+  // Split mode: when enabled, user draws a line across the selected polygon
+  // to split it into pieces. Uses JSTS polygonization.
+  React.useEffect(() => {
+    if (!map || !vectorSourceRef.current) return
+    if (activeTool !== ToolMode.Cursor) return
+    if (!splitMode || !selectedEditFeature) return
+
+    const source = vectorSourceRef.current
+    const feature = selectedEditFeature
+    const geometry = feature.getGeometry()
+    if (!(geometry instanceof Polygon) && !(geometry instanceof MultiPolygon)) {
+      setSplitMode(false)
+      return
+    }
+
+    // Pause the other selection interactions while drawing the split line
+    const modify = modifyInteractionRef.current
+    const translate = translateInteractionRef.current
+    const select = selectInteractionRef.current
+    modify?.setActive(false)
+    translate?.setActive(false)
+    select?.setActive(false)
+
+    const viewport = map.getViewport()
+    if (viewport) viewport.style.cursor = "crosshair"
+
+    // Transient source/layer for the split line preview
+    const drawSource = new VectorSource()
+    const drawLayer = new VectorLayer({
+      source: drawSource,
+      style: new Style({
+        stroke: new Stroke({
+          color: "#ef4444",
+          width: 2,
+          lineDash: [6, 4]
+        }),
+        image: new CircleStyle({
+          radius: 4,
+          fill: new Fill({ color: "#ef4444" }),
+          stroke: new Stroke({ color: "#ffffff", width: 2 })
+        })
+      }),
+      zIndex: 1000
+    })
+    map.addLayer(drawLayer)
+
+    const draw = new Draw({
+      source: drawSource,
+      type: "LineString",
+      style: new Style({
+        stroke: new Stroke({
+          color: "#ef4444",
+          width: 2,
+          lineDash: [6, 4]
+        }),
+        image: new CircleStyle({
+          radius: 4,
+          fill: new Fill({ color: "#ef4444" }),
+          stroke: new Stroke({ color: "#ffffff", width: 2 })
+        })
+      })
+    })
+    map.addInteraction(draw)
+
+    const splitFeatureWithLine = (
+      originalFeature: Feature,
+      splitLine: LineString
+    ): Feature[] => {
+      const originalGeom = originalFeature.getGeometry()
+      if (!(originalGeom instanceof Polygon) && !(originalGeom instanceof MultiPolygon)) return []
+
+      try {
+        const jsts = (window as any).jsts
+        if (!jsts?.io?.GeoJSONReader || !jsts?.io?.GeoJSONWriter || !jsts?.operation?.polygonize?.Polygonizer) {
+          console.warn("JSTS polygonizer not available; cannot split.")
+          return []
+        }
+
+        const reader = new jsts.io.GeoJSONReader()
+        const writer = new jsts.io.GeoJSONWriter()
+
+        const polyGeo = geoJsonFormat.current.writeGeometryObject(originalGeom)
+        const lineGeo = geoJsonFormat.current.writeGeometryObject(splitLine)
+
+        let polyJsts = reader.read(polyGeo)
+        try { polyJsts = polyJsts.buffer(0) } catch {}
+        const lineJsts = reader.read(lineGeo)
+
+        if (!polyJsts.intersects(lineJsts)) return []
+
+        // Union the polygon boundary with the split line, then polygonize.
+        // Only keep polygons whose interior lies inside the original polygon.
+        const boundary = polyJsts.getBoundary()
+        const union = boundary.union(lineJsts)
+
+        const polygonizer = new jsts.operation.polygonize.Polygonizer()
+        polygonizer.add(union)
+        const polygons = polygonizer.getPolygons()
+
+        const kept: any[] = []
+        const iter = polygons.iterator()
+        while (iter.hasNext()) {
+          const p = iter.next()
+          try {
+            const interior = p.getInteriorPoint()
+            if (polyJsts.contains(interior)) {
+              kept.push(p)
+            }
+          } catch {
+            // fall back to centroid if interior point fails
+            try {
+              const centroid = p.getCentroid()
+              if (polyJsts.contains(centroid)) kept.push(p)
+            } catch {}
+          }
+        }
+
+        if (kept.length < 2) return []
+
+        return kept.map(g => {
+          const geoJson = writer.write(g)
+          const newGeom = geoJsonFormat.current.readGeometry(geoJson, {
+            dataProjection: 'EPSG:3857',
+            featureProjection: 'EPSG:3857'
+          })
+          const newFeature = new Feature({ geometry: newGeom })
+          newFeature.set("classId", originalFeature.get("classId"))
+          newFeature.set("strokeColor", originalFeature.get("strokeColor"))
+          newFeature.set("opacity", originalFeature.get("opacity"))
+          return newFeature
+        })
+      } catch (e) {
+        console.warn("Split failed:", e)
+        return []
+      }
+    }
+
+    const drawEndKey = draw.on("drawend" as any, (event: any) => {
+      const drawnFeature = event.feature as Feature
+      const line = drawnFeature.getGeometry() as LineString
+      if (!line) {
+        setSplitMode(false)
+        return
+      }
+
+      const pieces = splitFeatureWithLine(feature, line)
+      if (pieces.length >= 2) {
+        if (source.hasFeature(feature)) {
+          source.removeFeature(feature)
+        }
+        pieces.forEach(p => source.addFeature(p))
+        // Clear selection so the user can pick a piece to keep editing
+        select?.getFeatures().clear()
+        saveState()
+      } else {
+        // No meaningful split produced - notify and keep the shape as-is
+        console.warn("Split line did not divide the polygon; draw a line that crosses the shape.")
+      }
+
+      setSplitMode(false)
+    })
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement
+      if (target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.isContentEditable) return
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setSplitMode(false)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+
+    return () => {
+      unByKey(drawEndKey)
+      map.removeInteraction(draw)
+      map.removeLayer(drawLayer)
+      drawSource.clear()
+      window.removeEventListener('keydown', handleKeyDown)
+      modify?.setActive(true)
+      translate?.setActive(true)
+      select?.setActive(true)
+      if (viewport) viewport.style.cursor = ""
+    }
+  }, [map, activeTool, splitMode, selectedEditFeature, saveState])
+
   // Pan the map in a direction
   const panMap = React.useCallback((direction: 'up' | 'down' | 'left' | 'right') => {
     if (!map) return
@@ -1616,7 +2300,192 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
       position: "relative"
     }}>
       <div style={{ width: "100%", height: "100%", minHeight: 0 }} ref={mapRef} />
-      
+
+      {/* Selected Shape Panel (Cursor/edit mode) */}
+      {activeTool === ToolMode.Cursor && selectedEditFeature && (() => {
+        const currentClassId = selectedEditFeature.get("classId")
+        const currentClass = classes.find(c => c.id === currentClassId)
+        const accentColor = currentClass?.color || "#4a6cf7"
+        return (
+          <div style={{
+            position: 'absolute',
+            top: '16px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            background: '#ffffff',
+            borderRadius: '8px',
+            boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
+            border: `1px solid ${accentColor}`,
+            padding: '10px 14px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            zIndex: 200,
+            fontSize: '13px'
+          }}>
+            <span style={{ color: '#8492a6', fontWeight: 600, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Selected
+            </span>
+            <div style={{
+              width: '14px',
+              height: '14px',
+              borderRadius: '4px',
+              background: accentColor,
+              flexShrink: 0,
+              boxShadow: `0 0 0 2px ${accentColor}33`
+            }} />
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#1f2d3d' }}>
+              <span style={{ fontWeight: 500 }}>Class:</span>
+              <select
+                value={currentClassId != null ? String(currentClassId) : ""}
+                onChange={(e) => {
+                  const v = e.target.value
+                  if (v === "") return
+                  handleChangeSelectedFeatureClass(Number(v))
+                }}
+                style={{
+                  padding: '4px 8px',
+                  borderRadius: '4px',
+                  border: '1px solid #dfe4f4',
+                  background: '#ffffff',
+                  fontSize: '13px',
+                  color: '#1f2d3d',
+                  cursor: 'pointer',
+                  minWidth: '140px'
+                }}
+              >
+                {currentClass == null && <option value="">(no class)</option>}
+                {classes.map(c => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </label>
+            <button
+              onClick={() => setSplitMode(true)}
+              disabled={splitMode || !(selectedEditFeature.getGeometry() instanceof Polygon || selectedEditFeature.getGeometry() instanceof MultiPolygon)}
+              title="Split shape with a line"
+              style={{
+                border: `1px solid ${splitMode ? accentColor : '#dfe4f4'}`,
+                background: splitMode ? `${accentColor}15` : '#fff',
+                color: splitMode ? accentColor : '#1f2d3d',
+                cursor: splitMode ? 'default' : 'pointer',
+                padding: '4px 8px',
+                borderRadius: '4px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                fontSize: '12px',
+                fontWeight: 500,
+                opacity: (selectedEditFeature.getGeometry() instanceof Polygon || selectedEditFeature.getGeometry() instanceof MultiPolygon) ? 1 : 0.5
+              }}
+              onMouseEnter={(e) => {
+                if (splitMode) return
+                e.currentTarget.style.background = '#f1f3f9'
+              }}
+              onMouseLeave={(e) => {
+                if (splitMode) return
+                e.currentTarget.style.background = '#fff'
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <line x1="4" y1="20" x2="20" y2="4" />
+                <circle cx="6" cy="18" r="2" />
+                <circle cx="18" cy="6" r="2" />
+              </svg>
+              {splitMode ? 'Drawing split...' : 'Split'}
+            </button>
+            <button
+              onClick={() => {
+                const feature = selectedEditFeature
+                if (!feature || !vectorSourceRef.current) return
+                if (vectorSourceRef.current.hasFeature(feature)) {
+                  vectorSourceRef.current.removeFeature(feature)
+                }
+                selectInteractionRef.current?.getFeatures().clear()
+                saveState()
+              }}
+              title="Delete shape (Delete)"
+              style={{
+                border: '1px solid #fca5a5',
+                background: '#fff',
+                color: '#ef4444',
+                cursor: 'pointer',
+                padding: '4px 8px',
+                borderRadius: '4px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                fontSize: '12px',
+                fontWeight: 500
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = '#fef2f2'
+                e.currentTarget.style.borderColor = '#ef4444'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = '#fff'
+                e.currentTarget.style.borderColor = '#fca5a5'
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polyline points="3,6 5,6 21,6" />
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+              </svg>
+              Delete
+            </button>
+            <button
+              onClick={() => selectInteractionRef.current?.getFeatures().clear()}
+              title="Deselect (Esc)"
+              style={{
+                border: 'none',
+                background: 'transparent',
+                color: '#8492a6',
+                cursor: 'pointer',
+                padding: '4px',
+                borderRadius: '4px',
+                display: 'flex',
+                alignItems: 'center'
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = '#f1f3f9' }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+        )
+      })()}
+
+      {/* Split-mode hint banner */}
+      {activeTool === ToolMode.Cursor && splitMode && selectedEditFeature && (
+        <div style={{
+          position: 'absolute',
+          top: '70px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          background: '#fff1f2',
+          color: '#b91c1c',
+          border: '1px solid #fca5a5',
+          padding: '8px 14px',
+          borderRadius: '6px',
+          fontSize: '12px',
+          zIndex: 200,
+          display: 'flex',
+          alignItems: 'center',
+          gap: '10px',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.08)'
+        }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <line x1="4" y1="20" x2="20" y2="4" />
+            <circle cx="6" cy="18" r="2" />
+            <circle cx="18" cy="6" r="2" />
+          </svg>
+          <span>Draw a line across the shape to split it. Double-click to finish. Esc to cancel.</span>
+        </div>
+      )}
+
       {/* Arrow Navigation Controls */}
       <div style={{
         position: 'absolute',
