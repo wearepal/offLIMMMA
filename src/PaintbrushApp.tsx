@@ -737,7 +737,7 @@ export const PaintbrushApp: React.FC = () => {
             layers={layers}
             onCachedTileUsed={handleCachedTileUsed}
           />
-          
+
           {/* Cached Tiles Indicator */}
           {usingCachedTiles && (
             <div style={{

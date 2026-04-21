@@ -218,7 +218,7 @@ export const PaintbrushSidebar: React.FC<PaintbrushSidebarProps> = ({
     <button
       className={`btn btn-sm ${activeTool === tool ? 'btn-primary' : 'btn-secondary'}`}
       onClick={() => setActiveTool(tool)}
-      style={{ flex: 1 }}
+      style={{ flex: 1, fontSize: "11px", padding: "6px 8px", gap: "4px" }}
     >
       {icon}
       {label}
@@ -624,8 +624,8 @@ export const PaintbrushSidebar: React.FC<PaintbrushSidebarProps> = ({
                 }
                 label="Paint"
               />
-              <ToolButton 
-                tool={ToolMode.Erase} 
+              <ToolButton
+                tool={ToolMode.Erase}
                 icon={
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M20 20H7L3 16c-.6-.6-.6-1.5 0-2.1L13.1 3.8c.6-.6 1.5-.6 2.1 0l5.1 5.1c.6.6.6 1.5 0 2.1L11 20"/>
@@ -633,6 +633,15 @@ export const PaintbrushSidebar: React.FC<PaintbrushSidebarProps> = ({
                   </svg>
                 }
                 label="Erase"
+              />
+              <ToolButton
+                tool={ToolMode.Point}
+                icon={
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+                    <polygon points="12,2 15,9 22,9.5 17,14 18.5,21 12,17.5 5.5,21 7,14 2,9.5 9,9" />
+                  </svg>
+                }
+                label="Point"
               />
             </div>
 

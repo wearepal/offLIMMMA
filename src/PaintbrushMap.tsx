@@ -7,6 +7,7 @@ import XYZ from "ol/source/XYZ"
 import VectorSource from "ol/source/Vector"
 import { fromLonLat, toLonLat, transform } from "ol/proj"
 import { Fill, Style, Stroke, Circle as CircleStyle } from "ol/style"
+import RegularShape from "ol/style/RegularShape"
 import { PaintClass, PaintStyle, ToolMode } from "./utils/types"
 import Feature from "ol/Feature"
 import LineString from "ol/geom/LineString"
@@ -22,6 +23,7 @@ import Snap from "ol/interaction/Snap"
 import Draw from "ol/interaction/Draw"
 import { click as clickCondition } from "ol/events/condition"
 import MapBrowserEvent from "ol/MapBrowserEvent"
+import Overlay from "ol/Overlay"
 import { unByKey } from "ol/Observable"
 import GeoJSON from "ol/format/GeoJSON"
 import { hexToRgba } from "./utils/utils"
@@ -42,9 +44,14 @@ export type BoundingBox = {
   maxLat: number
 }
 
-// Create render order function that uses current classes
+// Create render order function that uses current classes.
+// Points (notes) always render on top of painted polygons.
 const createRenderOrderFunction = (classes: PaintClass[]) => {
   return (feature1: FeatureLike, feature2: FeatureLike) => {
+    const isPoint1 = Boolean((feature1 as Feature).get?.("__isPoint"))
+    const isPoint2 = Boolean((feature2 as Feature).get?.("__isPoint"))
+    if (isPoint1 && !isPoint2) return 1
+    if (!isPoint1 && isPoint2) return -1
     const classId1 = (feature1 as Feature).get?.("classId")
     const classId2 = (feature2 as Feature).get?.("classId")
     const index1 = classId1 != null ? classes.findIndex(c => c.id === classId1) : -1
@@ -89,10 +96,14 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
   const mapRef = React.useRef<HTMLDivElement>(null)
   const [map, setMap] = React.useState<Map | null>(null)
   const [selectedEditFeature, setSelectedEditFeature] = React.useState<Feature | null>(null)
+  const [selectedPointFeature, setSelectedPointFeature] = React.useState<Feature | null>(null)
+  const [pointNoteDraft, setPointNoteDraft] = React.useState("")
   const [splitMode, setSplitMode] = React.useState(false)
   const selectInteractionRef = React.useRef<Select | null>(null)
   const modifyInteractionRef = React.useRef<Modify | null>(null)
   const translateInteractionRef = React.useRef<Translate | null>(null)
+  const pointPopupElementRef = React.useRef<HTMLDivElement | null>(null)
+  const pointPopupOverlayRef = React.useRef<Overlay | null>(null)
   const vectorSourceRef = React.useRef<VectorSource | null>(null)
   const dragPanInteractionsRef = React.useRef<DragPan[]>([])
   const isPaintingRef = React.useRef(false)
@@ -109,6 +120,8 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
   const polygonPreviewFeatureRef = React.useRef<Feature | null>(null)
   const snapIndicatorFeatureRef = React.useRef<Feature | null>(null)
   const TRANSIENT_KEY = "__transient"
+  const POINT_KEY = "__isPoint"
+  const POINT_COLOR = "#f59e0b"
   
   // Undo/Redo history
   const historyRef = React.useRef<any[]>([])
@@ -255,7 +268,16 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
       
       // Write feature in Web Mercator (EPSG:3857) - no transformation
       const geoJson = exportFormat.writeFeatureObject(feature)
-      
+
+      // Point annotations: carry just the note, not class metadata.
+      if (feature.get(POINT_KEY)) {
+        geoJson.properties = {
+          isPoint: true,
+          note: (feature.get("note") as string) ?? ""
+        }
+        return geoJson
+      }
+
       const classId = feature.get("classId")
       const paintClass = classesRef.current.find(c => c.id === classId)
       const classIndex = classesRef.current.findIndex(c => c.id === classId)
@@ -446,6 +468,24 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
       source: vectorSource,
       renderOrder: createRenderOrderFunction(classesRef.current) as any,
       style: (feature) => {
+        // Point (star) features: not tied to a class
+        if (feature.get(POINT_KEY)) {
+          const pointCacheKey = `__point-star`
+          if (!styleCacheRef.current[pointCacheKey]) {
+            styleCacheRef.current[pointCacheKey] = new Style({
+              image: new RegularShape({
+                points: 5,
+                radius: 11,
+                radius2: 4.5,
+                angle: 0,
+                fill: new Fill({ color: POINT_COLOR }),
+                stroke: new Stroke({ color: "#ffffff", width: 2 })
+              })
+            })
+          }
+          return styleCacheRef.current[pointCacheKey]
+        }
+
         const classId = feature.get("classId")
         const paintClass = classesRef.current.find(c => c.id === classId)
         const color = paintClass?.color || feature.get("strokeColor") || "#ff7f50"
@@ -694,6 +734,11 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
 
         features.forEach(feature => {
           const props = feature.getProperties()
+          if (props.isPoint) {
+            feature.set(POINT_KEY, true)
+            feature.set("note", typeof props.note === "string" ? props.note : "")
+            return
+          }
           if (props.classId) {
             feature.set("classId", props.classId)
           }
@@ -1516,6 +1561,112 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
     }
   }, [map, activeTool, saveState])
 
+  // Clear point selection when switching to a tool that doesn't edit points.
+  React.useEffect(() => {
+    if (activeTool !== ToolMode.Cursor && activeTool !== ToolMode.Point) {
+      setSelectedPointFeature(null)
+    }
+  }, [activeTool])
+
+  // Keep the note textarea in sync when the selected point changes.
+  React.useEffect(() => {
+    if (selectedPointFeature) {
+      const note = selectedPointFeature.get("note")
+      setPointNoteDraft(typeof note === "string" ? note : "")
+    } else {
+      setPointNoteDraft("")
+    }
+  }, [selectedPointFeature])
+
+  // Attach an OL Overlay to anchor the note popup at a geographic coordinate,
+  // so it pans/zooms with the map.
+  React.useEffect(() => {
+    if (!map || !pointPopupElementRef.current) return
+    const overlay = new Overlay({
+      element: pointPopupElementRef.current,
+      positioning: "bottom-center",
+      offset: [0, -18],
+      stopEvent: true,
+      autoPan: { animation: { duration: 200 }, margin: 24 } as any
+    })
+    pointPopupOverlayRef.current = overlay
+    map.addOverlay(overlay)
+    return () => {
+      map.removeOverlay(overlay)
+      pointPopupOverlayRef.current = null
+    }
+  }, [map])
+
+  // Move the overlay to the selected point (and follow it when the geometry
+  // changes, e.g. during translate).
+  React.useEffect(() => {
+    const overlay = pointPopupOverlayRef.current
+    if (!overlay) return
+    const shouldShow = !!selectedPointFeature &&
+      (activeTool === ToolMode.Cursor || activeTool === ToolMode.Point)
+    if (!shouldShow) {
+      overlay.setPosition(undefined)
+      return
+    }
+    const geometry = selectedPointFeature!.getGeometry()
+    const updatePosition = () => {
+      if (geometry instanceof Point) {
+        overlay.setPosition(geometry.getCoordinates())
+      }
+    }
+    updatePosition()
+    const key = geometry?.on("change", updatePosition)
+    return () => {
+      if (key) unByKey(key as any)
+    }
+  }, [selectedPointFeature, activeTool])
+
+  // Point tool: click the map to drop a star marker with an optional note.
+  React.useEffect(() => {
+    if (!map || !vectorSourceRef.current) return
+    if (activeTool !== ToolMode.Point) return
+
+    const source = vectorSourceRef.current
+    const viewport = map.getViewport()
+    if (viewport) viewport.style.cursor = "crosshair"
+
+    const handleClick = (event: MapBrowserEvent<UIEvent>) => {
+      // If the user clicked on an existing point, just open it for editing
+      // instead of stacking a new one on top.
+      const hit = map.forEachFeatureAtPixel(
+        event.pixel,
+        (feature, layer) => {
+          if (layer !== vectorLayerRef.current) return null
+          const f = feature as Feature
+          if (f.get(TRANSIENT_KEY)) return null
+          if (f.get(POINT_KEY)) return f
+          return null
+        },
+        { hitTolerance: 8 }
+      ) as Feature | null
+
+      if (hit) {
+        setSelectedPointFeature(hit)
+      } else {
+        const feature = new Feature({ geometry: new Point(event.coordinate) })
+        feature.set(POINT_KEY, true)
+        feature.set("note", "")
+        source.addFeature(feature)
+        setSelectedPointFeature(feature)
+        saveState()
+      }
+      event.preventDefault()
+      event.stopPropagation()
+    }
+
+    const clickKey = map.on("click" as any, handleClick)
+
+    return () => {
+      unByKey(clickKey)
+      if (viewport) viewport.style.cursor = ""
+    }
+  }, [map, activeTool, saveState])
+
   // Cursor (select / edit vertices / translate) functionality
   React.useEffect(() => {
     if (!map || !vectorSourceRef.current || !vectorLayerRef.current) return
@@ -1613,6 +1764,30 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
     const selectionStyle = (feature: FeatureLike) => {
       const f = feature as Feature
       const geometry = f.getGeometry()
+
+      // Selected point: highlight the star with a ring underneath.
+      if (f.get(POINT_KEY)) {
+        return [
+          new Style({
+            image: new CircleStyle({
+              radius: 14,
+              fill: new Fill({ color: hexToRgba(POINT_COLOR, 0.25) }),
+              stroke: new Stroke({ color: POINT_COLOR, width: 2 })
+            })
+          }),
+          new Style({
+            image: new RegularShape({
+              points: 5,
+              radius: 11,
+              radius2: 4.5,
+              angle: 0,
+              fill: new Fill({ color: POINT_COLOR }),
+              stroke: new Stroke({ color: "#ffffff", width: 2 })
+            })
+          })
+        ]
+      }
+
       const isPolygon = geometry instanceof Polygon || geometry instanceof MultiPolygon
       const classId = f.get("classId")
       const paintClass = classesRef.current.find(c => c.id === classId)
@@ -1685,7 +1860,13 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
     const syncSelection = () => {
       const features = select.getFeatures().getArray()
       const next = (features[0] as Feature) ?? null
-      setSelectedEditFeature(next)
+      if (next && next.get(POINT_KEY)) {
+        setSelectedPointFeature(next)
+        setSelectedEditFeature(null)
+      } else {
+        setSelectedEditFeature(next)
+        setSelectedPointFeature(null)
+      }
       if (!next) setSplitMode(false)
     }
     const selectAddKey = select.getFeatures().on("add" as any, syncSelection)
@@ -1976,6 +2157,7 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
       modifyInteractionRef.current = null
       translateInteractionRef.current = null
       setSelectedEditFeature(null)
+      setSelectedPointFeature(null)
       setSplitMode(false)
       const viewport = map.getViewport()
       if (viewport) viewport.style.cursor = ""
@@ -2300,6 +2482,172 @@ export const PaintbrushMap = React.forwardRef<PaintbrushMapRef, PaintbrushMapPro
       position: "relative"
     }}>
       <div style={{ width: "100%", height: "100%", minHeight: 0 }} ref={mapRef} />
+
+      {/* Point Note Editor — anchored to the point via an OL Overlay */}
+      <div ref={pointPopupElementRef} className="ol-point-popup">
+        {selectedPointFeature && (activeTool === ToolMode.Cursor || activeTool === ToolMode.Point) && (
+        <div style={{
+          position: 'relative',
+          background: '#ffffff',
+          borderRadius: '8px',
+          boxShadow: '0 4px 16px rgba(0,0,0,0.18)',
+          border: `1px solid ${POINT_COLOR}`,
+          padding: '12px 14px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '8px',
+          width: 'min(320px, 80vw)'
+        }}
+        // Little triangle tail pointing at the star.
+        >
+          <div style={{
+            position: 'absolute',
+            left: '50%',
+            bottom: '-7px',
+            transform: 'translateX(-50%) rotate(45deg)',
+            width: '12px',
+            height: '12px',
+            background: '#ffffff',
+            borderRight: `1px solid ${POINT_COLOR}`,
+            borderBottom: `1px solid ${POINT_COLOR}`
+          }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill={POINT_COLOR} stroke={POINT_COLOR} strokeWidth="2" strokeLinejoin="round">
+              <polygon points="12,2 15,9 22,9.5 17,14 18.5,21 12,17.5 5.5,21 7,14 2,9.5 9,9" />
+            </svg>
+            <span style={{ fontWeight: 600, fontSize: '13px', color: '#1f2d3d', flex: 1 }}>
+              Point note
+            </span>
+            <button
+              onClick={() => {
+                const feature = selectedPointFeature
+                if (!feature || !vectorSourceRef.current) return
+                if (vectorSourceRef.current.hasFeature(feature)) {
+                  vectorSourceRef.current.removeFeature(feature)
+                }
+                selectInteractionRef.current?.getFeatures().clear()
+                setSelectedPointFeature(null)
+                saveState()
+              }}
+              title="Delete point"
+              style={{
+                border: '1px solid #fca5a5',
+                background: '#fff',
+                color: '#ef4444',
+                cursor: 'pointer',
+                padding: '4px 8px',
+                borderRadius: '4px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                fontSize: '12px',
+                fontWeight: 500
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = '#fef2f2'
+                e.currentTarget.style.borderColor = '#ef4444'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = '#fff'
+                e.currentTarget.style.borderColor = '#fca5a5'
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polyline points="3,6 5,6 21,6" />
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+              </svg>
+              Delete
+            </button>
+            <button
+              onClick={() => {
+                selectInteractionRef.current?.getFeatures().clear()
+                setSelectedPointFeature(null)
+              }}
+              title="Close"
+              style={{
+                border: 'none',
+                background: 'transparent',
+                color: '#8492a6',
+                cursor: 'pointer',
+                padding: '4px',
+                borderRadius: '4px',
+                display: 'flex',
+                alignItems: 'center'
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = '#f1f3f9' }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+          <textarea
+            value={pointNoteDraft}
+            onChange={(e) => {
+              const v = e.target.value
+              setPointNoteDraft(v)
+              selectedPointFeature.set("note", v)
+            }}
+            onBlur={() => {
+              // Persist note edits to the undo history when the user steps away.
+              saveState()
+              onDataChange?.()
+            }}
+            placeholder="Add a note..."
+            rows={3}
+            autoFocus
+            style={{
+              resize: 'vertical',
+              minHeight: '60px',
+              padding: '8px 10px',
+              border: '1px solid #dfe4f4',
+              borderRadius: '6px',
+              fontSize: '13px',
+              fontFamily: 'inherit',
+              color: '#1f2d3d',
+              outline: 'none',
+              width: '100%',
+              boxSizing: 'border-box'
+            }}
+            onFocus={(e) => { e.currentTarget.style.borderColor = POINT_COLOR }}
+            onBlurCapture={(e) => { e.currentTarget.style.borderColor = '#dfe4f4' }}
+          />
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <button
+              onClick={() => {
+                selectedPointFeature.set("note", pointNoteDraft)
+                saveState()
+                onDataChange?.()
+                selectInteractionRef.current?.getFeatures().clear()
+                setSelectedPointFeature(null)
+              }}
+              style={{
+                border: `1px solid ${POINT_COLOR}`,
+                background: POINT_COLOR,
+                color: '#ffffff',
+                cursor: 'pointer',
+                padding: '6px 14px',
+                borderRadius: '6px',
+                fontSize: '12px',
+                fontWeight: 600,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = '#d97706' }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = POINT_COLOR }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+              Confirm
+            </button>
+          </div>
+        </div>
+        )}
+      </div>
 
       {/* Selected Shape Panel (Cursor/edit mode) */}
       {activeTool === ToolMode.Cursor && selectedEditFeature && (() => {

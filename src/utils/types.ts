@@ -13,6 +13,7 @@ export enum PaintStyle {
 export enum ToolMode {
   Cursor = "cursor",
   Paint = "paint",
-  Erase = "erase"
+  Erase = "erase",
+  Point = "point"
 }
 
